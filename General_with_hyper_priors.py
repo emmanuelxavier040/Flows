@@ -26,19 +26,19 @@ def vectorized_log_likelihood_unnormalized(Ws, X, Y, variance):
     XWs = torch.matmul(X, Ws_reshaped)
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
-    log_likelihood = -0.5 * (1 / variance) * torch.sum(squared_errors, dim=1)
+    log_likelihood = -0.5 * (1 / variance) * torch.sum(squared_errors, dim=-1)
     return log_likelihood
 
 
 def vectorized_log_likelihood_t_distribution_unnormalized(Ws, d, X, Y):
-    a_0 = len(X) / 2
+    a_0 = 2*len(X)
     b_0 = a_0
     Ws_reshaped = Ws.unsqueeze(-1)
     XWs = torch.matmul(X, Ws_reshaped)
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
     term_1 = -(a_0 + d / 2)
-    term_2 = torch.log(1 + (1 / (2 * b_0)) * torch.sum(squared_errors, dim=1))
+    term_2 = torch.log(1 + (1 / (2 * b_0)) * torch.sum(squared_errors, dim=-1))
     log_likelihood = term_1 * term_2
     return log_likelihood
 
@@ -58,25 +58,27 @@ def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, variance):
     return log_posterior
 
 
-def train(flows, d, X, Y, variance, num_iter, q_sample_size):
+def train(flows, d, X, Y, variance, epoch, q_sample_size):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows")
-    for i in range(num_iter):
+    losses = []
+    for i in range(epoch):
         optimizer.zero_grad()
         q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
         log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, variance)
         loss = torch.mean(q_log_prob - log_p)
-        if (i + 1) % 100 == 0:
+        if i == 0 or i % 100 == 0 or i+1 == epoch:
             print("Loss after iteration {}: ".format(i), loss.tolist())
+        losses.append(loss.detach().item())
         loss.backward()
         optimizer.step()
-    return flows
+    return flows, losses
 
 
-def train_with_student_t(flows, d, X, Y, variance, num_iter, q_sample_size):
+def train_with_student_t(flows, d, X, Y, variance, epoch, q_sample_size):
     optimizer = optim.Adam(flows.parameters())
-    print("Starting training the flows")
-    for i in range(num_iter):
+    print("Starting training the flows with Student-t likelihood")
+    for i in range(epoch):
         optimizer.zero_grad()
         q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
         log_likelihood = vectorized_log_likelihood_t_distribution_unnormalized(q_samples, d, X, Y)
@@ -85,21 +87,21 @@ def train_with_student_t(flows, d, X, Y, variance, num_iter, q_sample_size):
         # print(log_likelihood, "============")
         # print(log_prior)
         loss = torch.mean(q_log_prob - log_p)
-        if (i + 1) % 100 == 0:
+        if i == 0 or i % 100 == 0 or i + 1 == epoch:
             print("Loss after iteration {}: ".format(i), loss.tolist())
         loss.backward()
         optimizer.step()
     return flows
 
 
-def sample_Ws(model, sample_size, min_lambda, max_lambda, variance, interval_size, n_iter):
+def sample_Ws(model, sample_size, X, Y, min_lambda, max_lambda, variance, interval_size, n_iter):
     sample_list, lambda_list, loss_list = [], [], []
     with torch.no_grad():
         for _ in range(n_iter):
             uniform_lambdas = torch.rand(interval_size).cuda()
             lambdas_exp = (uniform_lambdas * (max_lambda - min_lambda) + min_lambda).view(-1, 1)
             posterior_samples, log_probs_samples = model.sample_and_log_prob(sample_size)
-            posterior_eval = vectorized_log_posterior_unnormalized(q_samples, X, Y, variance)
+            posterior_eval = vectorized_log_posterior_unnormalized(posterior_samples, X, Y, variance)
 
 
 def generate_synthetic_data(d, n):
@@ -146,29 +148,34 @@ def compute_analytical_posterior_for_fixed_variance(X, Y, prior_mean, prior_cova
     return mean_np, cov_np
 
 
-# Define a Multivariate-Normal distribution and generate some real world samples X
-dimension = 2
-num_samples = 100
-X, Y, W, variance = generate_synthetic_data(dimension, num_samples)
-flows = build_flow_model(dimension)
+def main():
+    # Define a Multivariate-Normal distribution and generate some real world samples X
+    dimension = 3
+    num_samples = 100
+    X, Y, W, variance = generate_synthetic_data(dimension, num_samples)
+    flows = build_flow_model(dimension)
 
-num_iter = 500
-q_sample_size = 100
-flows = train(flows, dimension, X, Y, variance, num_iter, q_sample_size)
-# q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
-# log_p = vectorized_log_posterior_unnormalized(q_samples, X, Y, variance)
-q_samples = flows.sample(1000)
-sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
-fixed = W.tolist()
+    num_iter = 1000
+    q_sample_size = 100
+    flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size)
+    # View.plot_loss(losses)
 
-# flows = train_with_student_t(flows, dimension, X, Y, variance, num_iter, q_sample_size)
-# q_samples = flows.sample(1000)
-sample_mean = torch.mean(q_samples, dim=0).tolist()
-for i in range(dimension):
-    print(f"Index {i}: {fixed[i]} Fixed Sigma W: {sample_mean_1[i]} Student-t W: {sample_mean[i]}")
+    q_samples = flows.sample(10000)
+    sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
+    fixed = W.tolist()
 
-analytical_mean, analytical_cov = compute_analytical_posterior_for_fixed_variance(X, Y, torch.zeros(dimension),
-                                                                                  torch.eye(dimension), variance)
-view_samples = q_samples.detach().numpy()
-# View.plot_analytical_vs_flow_posterior_ridge_regression_fixed_variance(analytical_mean, analytical_cov, view_samples)
-View.plot_analytical_vs_flow_posterior_ridge_regression_fixed_variance_2(analytical_mean, analytical_cov, flows)
+    # flows = build_flow_model(dimension)
+    # flows = train_with_student_t(flows, dimension, X, Y, variance, num_iter, q_sample_size)
+    q_samples = flows.sample(10000)
+    sample_mean = torch.mean(q_samples, dim=0).tolist()
+    for i in range(dimension):
+        print(f"Index {i}: {fixed[i]} Fixed Sigma W: {sample_mean_1[i]} Student-t W: {sample_mean[i]}")
+
+    analytical_mean, analytical_cov = compute_analytical_posterior_for_fixed_variance(X, Y, torch.zeros(dimension),
+                                                                                      torch.eye(dimension), variance)
+    View.plot_analytical_flow_posterior_ridge_regression_with_samples(analytical_mean, analytical_cov, flows)
+    View.plot_analytical_flow_posterior_ridge_regression_on_grid(dimension, analytical_mean, analytical_cov, flows)
+
+
+if __name__ == "__main__":
+    main()

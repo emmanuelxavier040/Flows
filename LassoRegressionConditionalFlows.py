@@ -7,21 +7,25 @@ un-normalized posterior which is equivalent to the un-normalized Gaussian likeli
 We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
 learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
 """
+import os.path
 
 import torch
 from torch import optim
 import numpy as np
+import keyboard
+
 
 from enflows.flows.base import Flow
 from enflows.distributions.normal import StandardNormal
 from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.transforms.linear import NaiveLinear, ScalarScale, ScalarShift
-from enflows.nn.nets import ResidualNet, Sin
-from enflows.transforms import iResBlock
+from enflows.nn.nets import ResidualNet
 from enflows.transforms.conditional import ConditionalShiftTransform, ConditionalScaleTransform, ConditionalLUTransform
 
+import LassoRegression
 import Visualizations as View
 
+torch.manual_seed(20)
 
 def vectorized_log_likelihood_unnormalized(Ws, X, Y, variance):
     Ws_reshaped = Ws.unsqueeze(-1)
@@ -29,9 +33,6 @@ def vectorized_log_likelihood_unnormalized(Ws, X, Y, variance):
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
     log_likelihood = -0.5 * (1 / variance) * torch.sum(squared_errors, dim=-1)
-    # print(squared_errors)
-    # print(torch.sum(squared_errors, dim=2))
-    # print("Log likelihood: ==>", log_likelihood)
     return log_likelihood
 
 
@@ -43,7 +44,7 @@ def vectorized_log_likelihood_t_distribution_unnormalized(Ws, d, X, Y):
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
     term_1 = -(a_0 + d / 2)
-    term_2 = torch.log(1 + (1 / (2 * b_0)) * torch.sum(squared_errors, dim=1))
+    term_2 = torch.log(1 + (1 / (2 * b_0)) * torch.sum(squared_errors, dim=-1))
     log_likelihood = term_1 * term_2
     return log_likelihood
 
@@ -73,69 +74,70 @@ def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, varia
     return log_posterior
 
 
-def train(flows, d, X, Y, variance, num_iter, q_sample_size, lamda=1.0):
-    optimizer = optim.Adam(flows.parameters())
+def train(flows, d, X, Y, variance, epochs, n, fixed_lambda_exp=torch.tensor([1.0])):
+    optimizer = optim.Adam(flows.parameters(), lr=1e-3)
     print("Starting training the flows")
     losses = []
-    for i in range(num_iter):
+    lambdas_exp = fixed_lambda_exp.view(-1, 1)
+    context = lambdas_exp
+    for i in range(epochs):
         optimizer.zero_grad()
-        q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
-        lambdas_list = torch.ones(q_sample_size) * lamda
-        log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_list, variance)
+        q_samples, q_log_prob = flows.sample_and_log_prob(n, context=context)
+        log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, variance)
         loss = torch.mean(q_log_prob - log_p)
-        if (i + 1) % 100 == 0:
+        if i == 0 or i % 100 == 0 or i + 1 == epochs:
             print("Loss after iteration {}: ".format(i), loss.tolist())
         losses.append(loss.detach().item())
         loss.backward()
         optimizer.step()
+
     return flows, losses
 
 
-def train_conditional_flows(flows, d, X, Y, variance, num_iter, q_sample_size):
-    context_size = 1
-    lambda_min_exp = -3
-    lambda_max_exp = 3
+def train_conditional_flows(flows, d, X, Y, variance, epochs, n, context_size=100,
+                            lambda_min_exp=-1, lambda_max_exp=2):
+    file_name = f'CNF_d{d}_n{n}_e{epochs}_lmin{lambda_min_exp}_lmax{lambda_max_exp}'
 
-    optimizer = optim.Adam(flows.parameters(), lr=1e-4)
+    optimizer = optim.Adam(flows.parameters(), lr=1e-3)
     print("Starting training the flows")
     losses = []
-
-    for i in range(num_iter):
+    torch.set_anomaly_enabled(True)
+    for i in range(epochs):
         optimizer.zero_grad()
         uniform_lambdas = torch.rand(context_size)
         lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
         context = lambdas_exp
-        # print("Context : ", context)
-        q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size, context=context)
+        q_samples, q_log_prob = flows.sample_and_log_prob(n, context=context)
         log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, variance)
         loss = torch.mean(q_log_prob - log_p)
         # print(loss.tolist())
-        if (i) % 100 == 0:
+        if i % 10 == 0 or i + 1 == epochs:
             print("Loss after iteration {}: ".format(i), loss.tolist())
         losses.append(loss.detach().item())
         loss.backward()
         optimizer.step()
+        if keyboard.is_pressed('esc'):
+            print("Stopping training... ")
+            break
+
+    save_model(flows, file_name)
+
     return flows, losses
 
 
-def train_2(flows, d, X, Y, variance, num_iter, q_sample_size, lamda=1.0):
-    optimizer = optim.Adam(flows.parameters())
-    print("Starting training the flows")
-    losses = []
-    for i in range(num_iter):
-        optimizer.zero_grad()
-        q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
-        lambdas_list = torch.ones(q_sample_size) * lamda
-        log_likelihood = vectorized_log_likelihood_t_distribution_unnormalized(q_samples, d, X, Y)
-        log_prior = vectorized_log_prior_unnormalized(q_samples, d, lambdas_list, variance)
-        log_p = log_likelihood + log_prior
-        loss = torch.mean(q_log_prob - log_p)
-        if (i + 1) % 100 == 0:
-            print("Loss after iteration {}: ".format(i), loss.tolist())
-        losses.append(loss.detach().item())
-        loss.backward()
-        optimizer.step()
-    return flows, losses
+def load_model(dimensions, model_path):
+    model = build_conditional_flow_model(dimensions)
+    model.load_state_dict(torch.load(model_path))
+    model.eval()
+    return model
+
+
+def save_model(model, file_name):
+    folder_name = "./models/"
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+
+    torch.save(model.state_dict(), f"{folder_name}Flows_{file_name}")
 
 
 def generate_synthetic_data(d, l, n, noise):
@@ -146,8 +148,12 @@ def generate_synthetic_data(d, l, n, noise):
     data_mvn_dist = torch.distributions.MultivariateNormal(data_mean, data_cov)
     num_data_samples = torch.Size([n])
     X = data_mvn_dist.sample(num_data_samples)
-    W = torch.rand(d)
-    # W[-l:] = 0
+    # W = torch.rand(d) * 20 - 10
+    W = torch.randn(d)
+    print(W)
+    # W = torch.tensor([1.5, 2.4, 0.3, 0.7])
+    if l < d:
+        W[-l:] = 0
     v = torch.tensor(noise)
     delta = torch.randn(num_data_samples) * v
     Y = torch.matmul(X, W) + delta
@@ -155,11 +161,10 @@ def generate_synthetic_data(d, l, n, noise):
 
 
 def build_flow_model(d):
-    context_features = 16
     print("Defining the flows")
     base_dist = StandardNormal(shape=[d])
     transforms = []
-    num_layers = 5
+    num_layers = 15
     for _ in range(num_layers):
         InverseTransform(transforms.append(NaiveLinear(features=d)))
         InverseTransform(transforms.append(ScalarScale(scale=2)))
@@ -170,30 +175,12 @@ def build_flow_model(d):
 
 
 def build_conditional_flow_model(d):
-    context_features = 4
+    context_features = 16
     print("Defining the flows")
-
-    densenet_factory = iResBlock.Factory()
-    densenet_factory.set_logabsdet_estimator(brute_force=True,  # set this to false for high dimensions (>3)
-                                             # unbiased_estimator=True,  # default;
-                                             # trace_estimator="neumann"  # either "neumann" or "basic";
-                                             )
-    densenet_factory.set_densenet(condition_input=True,
-                                  condition_lastlayer=False,
-                                  condition_multiplicative=True,
-                                  ###
-                                  dimension=d,
-                                  densenet_depth=2,
-                                  densenet_growth=16,
-                                  c_embed_hidden_sizes=(64, 64, 10),
-                                  m_embed_hidden_sizes=(64, 64),
-                                  activation_function=Sin(10),
-                                  lip_coeff=.97,
-                                  context_features=context_features)
 
     base_dist = StandardNormal(shape=[d])
     transforms = []
-    num_layers = 5
+    num_layers = 10
     for _ in range(num_layers):
         InverseTransform(transforms.append(ConditionalLUTransform(features=d, hidden_features=64,
                                                                   context_features=context_features)))
@@ -201,8 +188,6 @@ def build_conditional_flow_model(d):
                                                                      context_features=context_features)))
         InverseTransform(transforms.append(ConditionalShiftTransform(features=d, hidden_features=64,
                                                                      context_features=context_features)))
-        # InverseTransform(transforms.append(densenet_factory.build()))
-    # transforms = transforms[::-1]
     transform = CompositeTransform(transforms)
     embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=32,
                                 num_blocks=5, activation=torch.nn.functional.relu)
@@ -210,33 +195,66 @@ def build_conditional_flow_model(d):
     return model
 
 
-lamda = 1
-dimension, last_zero_indices = 3, 3
-data_sample_size = 100
-noise = 0.1
-print(f"============= Parameters ======== \n"
-      f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
-      f"num_samples:{data_sample_size}, noise:{noise}\n")
+def view_original_vs_flow_learnt_parameters(d, fixed, flows, context=None):
+    sample_size = 10000
+    sample_mean = None
+    if context is None:
+        q_samples = flows.sample(sample_size)
+        sample_mean = torch.mean(q_samples, dim=0).tolist()
+    else:
+        q_samples = flows.sample(sample_size, context=context.view(-1, 1))
+        sample_mean = torch.mean(q_samples[0], dim=0).tolist()
 
-X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
-num_iter = 500
-q_sample_size = 1
+    print(f"Index ||  Original  ||  Fixed Lambda ")
+    for i in range(d):
+        print(f"Index {i}       :     {fixed[i]}      :       {sample_mean[i]}")
 
-# train flows for fixed lambda
-# flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
 
-# train conditional flows
-# flows = build_flow_model(dimension)
-flows = build_conditional_flow_model(dimension)
-flows, losses = train_conditional_flows(flows, dimension, X, Y, variance, num_iter, q_sample_size)
+def main():
+    dimension, last_zero_indices = 8, 8
+    data_sample_size = 20
+    noise = 0.1
+    print(f"============= Parameters ============= \n"
+          f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
+          f"Sample Size:{data_sample_size}, noise:{noise}\n")
 
-# flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
-View.plot_loss(losses)
-#
-#
-# uniform_lambdas = torch.rand(10)
-# lambdas_exp = (uniform_lambdas * (1 - -2) + -2).view(-1, 1)
-# context = lambdas_exp
-# q_samples, log_ps = flows.sample_and_log_prob(100, context)
-# print(q_samples)
-# print(log_ps)
+    X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
+    original_W = W.tolist()
+    variance = torch.tensor(0.3)
+    epochs = 1000
+    q_sample_size = 1
+
+    fixed_lambda_exp = torch.rand(1)
+    print("Fixed Lambda exponent: ", fixed_lambda_exp)
+    #==================================================================
+    # train flows for fixed lambda with unconditional version
+    flows = build_flow_model(dimension)
+    flows, losses = LassoRegression.train(flows, dimension, X, Y, variance, epochs,
+                                          q_sample_size, fixed_lambda_exp.item())
+    view_original_vs_flow_learnt_parameters(dimension, original_W, flows)
+
+
+    #==================================================================
+    # train flows for fixed lambda with CNF
+    flows = build_flow_model(dimension)
+    flows, losses = train(flows, dimension, X, Y, variance, epochs, q_sample_size, fixed_lambda_exp)
+    view_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
+
+
+    #==================================================================
+    # train conditional flows
+    context_size = 5000
+    lambda_min_exp = -1
+    lambda_max_exp = 5
+    flows = build_conditional_flow_model(dimension)
+    flows, losses = train_conditional_flows(flows, dimension, X, Y, variance, epochs, q_sample_size,
+                                            context_size, lambda_min_exp, lambda_max_exp)
+    view_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
+
+    # View.plot_loss(losses)
+    View.plot_lasso_beta_vs_lambda(dimension, flows, lambda_min_exp, lambda_max_exp)
+
+
+if __name__ == "__main__":
+    main()
+# device = "cuda:0" if torch.cuda.is_available() else 'cpu'

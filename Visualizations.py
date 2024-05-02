@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import multivariate_normal
 
+sns.set_theme(style="darkgrid")
+
 
 def plot_loss(loss_values):
     sns.set(style="whitegrid")
@@ -18,194 +20,63 @@ def plot_loss(loss_values):
     plt.show()
 
 
-def plot_mvn():
-    mean = torch.tensor([0.0, 0.0])
-    cov = torch.tensor([[1.0, 0.5], [0.5, 1.0]])
-    mean_np = mean.numpy()
-    cov_np = cov.numpy()
+def plot_analytical_flow_posterior_ridge_regression_on_grid(dimensions, mean_np, cov_np, flows):
+    ranges = []
+    sample_size = 200
+
+    for i in range(dimensions):
+        ax_min = mean_np[i] - 3 * torch.sqrt(cov_np[i, i])
+        ax_max = mean_np[i] + 3 * torch.sqrt(cov_np[i, i])
+        points = torch.linspace(ax_min, ax_max, sample_size)
+        ranges.append(points)
+
+    grids = torch.meshgrid(*ranges, indexing='ij')
     rv = multivariate_normal(mean_np, cov_np)
+    analytical_density = rv.pdf(torch.stack(grids, dim=-1))
 
-    x = np.linspace(-4, 4, 50)
-    y = np.linspace(-4, 4, 50)
-    X, Y = np.meshgrid(x, y)
+    flow_inputs = torch.cat([grid.reshape(-1, 1) for grid in grids], dim=1)
+    flow_density = flows.log_prob(flow_inputs)
+    reshape_argument = [sample_size for _ in range(dimensions)]
+    flow_density_reshaped = flow_density.reshape(*reshape_argument).exp()
 
-    positions = np.vstack([X.ravel(), Y.ravel()]).T
-    z = rv.pdf(positions)
-    z = z.reshape(X.shape)
+    analytical_marginals = []
+    flow_marginals = []
+    for i in range(dimensions):
+        axes_to_sum = tuple(j for j in range(dimensions) if j != i)
+        analytical_marginal = analytical_density.sum(axis=axes_to_sum)
+        flow_marginal = flow_density_reshaped.sum(axis=axes_to_sum)
+        analytical_marginals.append(analytical_marginal)
+        flow_marginals.append(flow_marginal)
 
-    plt.contour(X, Y, z)
-    plt.title('Multivariate Normal Distribution (Mean: [0, 0], Covariance: [[1, 0.5], [0.5, 1]])')
-    plt.xlabel('X')
-    plt.ylabel('Y')
-    plt.show()
+    fig, axs = plt.subplots(1, dimensions, figsize=(5 * dimensions, 4))
 
+    for i in range(dimensions):
+        axs[i].plot(ranges[i], analytical_marginals[i])
+        axs[i].plot(ranges[i], flow_marginals[i].detach().numpy())
+        axs[i].set_xlabel(f"W_{i + 1}")
+        axs[i].set_ylabel("Value")
+        axs[i].legend(['analytical', 'flow'])
 
-def plot():
-    mean = [0, 0]  # 2D normal distribution
-    cov = [[1, 0.5], [0.5, 1]]  # Covariance matrix
-
-    # Define grid range (adjust as needed)
-    x_min = -3
-    x_max = 3
-    y_min = -3
-    y_max = 3
-    grid_size = 100  # Number of points in each dimension
-
-    # Create a mesh grid of points
-    X, Y = np.meshgrid(np.linspace(x_min, x_max, grid_size), np.linspace(y_min, y_max, grid_size))
-
-    # Evaluate the probability density function (PDF) at each point
-    pos = np.dstack((X, Y))  # Combine X and Y into a 3D array for multivariate_normal
-    pdf = multivariate_normal(mean, cov).pdf(pos)
-
-    # Marginal distributions along each axis (X and Y)
-    marginal_x = np.sum(pdf, axis=0)
-    marginal_y = np.sum(pdf, axis=1)
-
-    # Plot the marginal distributions
-    plt.figure(figsize=(10, 6))  # Adjust figure size as desired
-
-    # Marginal distribution for X (solid line)
-    plt.plot(X[0, :], marginal_x, label='Marginal X', color='blue', linewidth=2)
-
-    # Marginal distribution for Y (dashed line)
-    plt.plot(X[0, :], marginal_y, label='Marginal Y', color='orange', linewidth=2, linestyle='--')
-
-    # Set labels and title
-    plt.xlabel('Values')
-    plt.ylabel('Density')
-    plt.title('Marginal Distributions of Gaussian Mixture')
-    plt.legend()  # Add legend for clarity
-
-    # Show the plot
-    plt.show()
-
-
-def plot2():
-    mean = torch.tensor([2.0, 3.0])
-    cov = torch.tensor([[1.0, 0.5], [0.5, 2.0]])
-
-    # Create a grid of points
-    x_min, x_max = mean[0] - 3 * torch.sqrt(cov[0, 0]), mean[0] + 3 * torch.sqrt(cov[0, 0])
-    y_min, y_max = mean[1] - 3 * torch.sqrt(cov[1, 1]), mean[1] + 3 * torch.sqrt(cov[1, 1])
-    num_points = 200
-    x = torch.linspace(x_min, x_max, num_points)
-    y = torch.linspace(y_min, y_max, num_points)
-    X, Y = torch.meshgrid(x, y)  # Create a meshgrid for x and y
-
-    # Calculate the probability density
-    # Create a multivariate normal distribution object
-    rv = multivariate_normal(mean, cov)
-
-    # Calculate the probability density at each point
-    density = rv.pdf(np.dstack([X, Y]))  # Combine X and Y into a 3D array
-    print(density)
-    # Marginal distributions
-    marginal_x = density.sum(axis=0)  # Sum over y-axis to get marginal for x
-    marginal_y = density.sum(axis=1)  # Sum over x-axis to get marginal for y
-
-    # Plot marginals
-    plt.figure(figsize=(10, 5))
-
-    plt.subplot(121)
-    plt.plot(x, marginal_x)
-    plt.xlabel("X")
-    plt.ylabel("Density")
-    plt.title("Marginal Distribution (X)")
-
-    plt.subplot(122)
-    plt.plot(y, marginal_y)
-    plt.xlabel("Y")
-    plt.ylabel("Density")
-    plt.title("Marginal Distribution (Y)")
-
+    plt.suptitle('Analytical Vs Flow Posterior - Ridge Regression')
     plt.tight_layout()
+    plt.savefig("./figures/analytical_vs_flow_posterior_on_grid.pdf")
     plt.show()
 
 
-# plot2()
-
-
-# mean = torch.tensor([2.0, 3.0])
-# cov = torch.tensor([[1.0, 0.5], [0.5, 2.0]])
-#
-# # Create a grid of points
-# x_min, x_max = mean[0] - 3 * torch.sqrt(cov[0, 0]), mean[0] + 3 * torch.sqrt(cov[0, 0])
-# y_min, y_max = mean[1] - 3 * torch.sqrt(cov[1, 1]), mean[1] + 3 * torch.sqrt(cov[1, 1])
-# num_points = 2
-# x = torch.linspace(x_min, x_max, num_points)
-# y = torch.linspace(y_min, y_max, num_points)
-# X, Y = torch.meshgrid(x, y)
-# print(X)
-# print(Y)
-# print(np.dstack([X, Y]))
-
-def plot_analytical_vs_flow_posterior_ridge_regression_fixed_variance_2(mean_np, cov_np,
-                                                                      flows):
-    x_min, x_max = mean_np[0] - 3 * torch.sqrt(cov_np[0, 0]), mean_np[0] + 3 * torch.sqrt(cov_np[0, 0])
-    y_min, y_max = mean_np[1] - 3 * torch.sqrt(cov_np[1, 1]), mean_np[1] + 3 * torch.sqrt(cov_np[1, 1])
-    num_points = 5
-    x = torch.linspace(x_min, x_max, num_points)
-    y = torch.linspace(y_min, y_max, num_points)
-    X, Y = torch.meshgrid(x, y)
-
-    rv = multivariate_normal(mean_np, cov_np)
-    density = rv.pdf(np.dstack([X, Y]))
-
-    marginal_w_0 = density.sum(axis=0)
-    marginal_w_1 = density.sum(axis=1)
-
-    # plt.figure(figsize=(10, 5))
-    fig, axs = plt.subplots(1, 2, figsize=(20, 10))
-
-    plt.subplot(121)
-    plt.plot(x, marginal_w_0)  # Use plt.plot for marginal distributions
-    plt.xlabel("X")
-    plt.ylabel("Density")
-    plt.title("Marginal Distribution (X)")
-
-    plt.subplot(122)
-    plt.plot(y, marginal_w_1)  # Use plt.plot for marginal distributions
-    plt.xlabel("Y")
-    plt.ylabel("Density")
-    plt.title("Marginal Distribution (Y)")
-
-    X = X.unsqueeze(2)
-    Y = Y.unsqueeze(2)
-    grid_points = torch.cat((X, Y), dim=1)
-    grid_points = grid_points.view(-1, 2)
-
-    flow_density = flows.log_prob(grid_points)
-
-    print(flow_density)
-
-    flow_marginal_w_0 = flow_density.sum(axis=0).detach().numpy()
-
-    plt.subplot(121)
-    plt.plot(x, flow_marginal_w_0)  # Use plt.plot for marginal distributions
-    plt.xlabel("X")
-    plt.ylabel("Density")
-    plt.title("Marginal Distribution (X)")
-
-
-    plt.tight_layout()
-    plt.show()
-
-
-
-def plot_analytical_vs_flow_posterior_ridge_regression_fixed_variance(mean_np, cov_np,
-                                                                      flow_samples):
-    analytical_samples = multivariate_normal.rvs(mean_np, cov_np, size=50000)
+def plot_analytical_flow_posterior_ridge_regression_with_samples(mean_np, cov_np,
+                                                                 flows):
+    sample_size = 10000
+    flow_samples = flows.sample(sample_size).detach().numpy()
+    analytical_samples = multivariate_normal.rvs(mean_np, cov_np, size=sample_size)
     analytical_samples = pd.DataFrame(analytical_samples)
+
     analytical_samples["type"] = "analytical"
     flow_samples = pd.DataFrame(flow_samples)
     flow_samples["type"] = "flow"
     data = pd.concat([analytical_samples, flow_samples])
-    num_axes = mean_np.size
-    fig, axes = plt.subplots(math.ceil(num_axes / 3), 3, figsize=(10, 5))
 
-    for i in range(math.ceil(num_axes / 3) * 3 - num_axes):
-        axes[math.ceil(num_axes / 3) - 1, 3 - i - 1].axis('off')
+    num_axes = mean_np.size
+    fig, axes = plt.subplots(1, num_axes, figsize=(10, 5))
 
     for i, ax in enumerate(axes.flat):
         if ax.axison:
@@ -216,26 +87,35 @@ def plot_analytical_vs_flow_posterior_ridge_regression_fixed_variance(mean_np, c
 
     plt.suptitle('Analytical Vs Flow Posterior - Ridge Regression')
     plt.tight_layout()
+    plt.savefig("./figures/analytical_vs_flow_posterior_with_samples.pdf")
     plt.show()
 
 
-def plot_analytical_vs_learnt_posterior_Ridge_Regression_student_t(X, Y, prior_mean, prior_covariance, a_0, b_0):
-    return 0
+def plot_lasso_beta_vs_lambda(dimension, flows, lambda_exp_min=-1, lambda_exp_max=4):
+    context_size = 100
+    flow_sample_size = 100
+    uniform_lambdas = torch.rand(context_size)
+    lambdas_exp = (uniform_lambdas * (lambda_exp_max - lambda_exp_min) + lambda_exp_min).view(-1, 1)
+    context = lambdas_exp
+    q_samples, log_ps = flows.sample_and_log_prob(flow_sample_size, context)
+    log_ps = torch.exp(log_ps)
+    lambda_values = lambdas_exp.unsqueeze(1).expand(-1, q_samples.shape[1], lambdas_exp.shape[1])
+    new_weight_vectors = torch.cat((lambda_values, q_samples), dim=2)
+    log_probs = torch.reshape(log_ps, (log_ps.shape[0], log_ps.shape[1], 1))
+    new_weight_vectors_with_log_probs = torch.cat((new_weight_vectors, log_probs), dim=2)
+    final_tensor = new_weight_vectors_with_log_probs.view(-1, new_weight_vectors_with_log_probs.shape[-1])
+    data = pd.DataFrame(final_tensor.detach().numpy())
+    print(data)
 
+    for i in range(dimension):
+        sns.lineplot(x=0, y=i+1, data=data, label='W_'+str(i))
 
-def plot_mvn_2(data):
-    # mean = torch.tensor([0.0, 0.0])
-    # cov = torch.tensor([[1.0, 0.5], [0.5, 1.0]])
-    # mean_np = mean.numpy()
-    # cov_np = cov.numpy()
-    # data = multivariate_normal.rvs(mean_np, cov_np, size=1000)
-    # sns.kdeplot(data=data)
-    data = pd.DataFrame(data)
-    sns.jointplot(
-        data=data,
-        kind="kde"
-    )
-    plt.xlabel('X')
-    plt.ylabel('Y')
-    plt.title('Multivariate Normal Distribution (Seaborn KDE)')
+    plt.title('Beta Coefficients Vs Lambda - Lasso Regression')
+    plt.xlabel(r'$\lambda$', fontsize=15)
+    plt.xscale('log')
+
+    plt.ylabel(r'$\beta$', fontsize=15)
+    plt.tight_layout()
+    plt.legend()
+    plt.savefig("./figures/CNF_lasso_beta_vs_lambda.pdf")
     plt.show()
