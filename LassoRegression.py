@@ -7,8 +7,10 @@ un-normalized posterior which is equivalent to the un-normalized Gaussian likeli
 We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
 learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
 """
-
+from sklearn.linear_model import LinearRegression
+import scipy as sp
 import torch
+from enflows.transforms import ActNorm
 from torch import optim
 import numpy as np
 
@@ -138,15 +140,48 @@ def generate_synthetic_data(d, l, n, noise):
     return X, Y, W, v
 
 
+def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
+    assert n_features >= n_non_zero
+
+    # Generate non-zero coefficients randomly
+    non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
+    coefficients = np.zeros(n_features)
+    coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)  # Random non-zero coefficients
+
+    # Generate data matrix X from a Gaussian distribution with covariance matrix sampled from a Wishart distribution
+    scale_matrix = np.eye(n_features)  # Identity matrix as the scale matrix
+    covariance = sp.stats.wishart(df=n_features, scale=scale_matrix).rvs(1)
+
+    # Sample data matrix X from a multivariate Gaussian distribution with zero mean and covariance matrix
+    X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
+
+    # Generate response variable y
+    y = np.dot(X, coefficients) + np.random.normal(0, noise_std ** 2,
+                                                   n_samples)  # Linear regression model with Gaussian noise
+
+    # compute regression parameters
+    reg = LinearRegression().fit(X, y)
+    r2_score = reg.score(X, y)
+    print(f"R^2 score: {r2_score:.4f}")
+    sigma_regr = np.sqrt(np.mean(np.square(y - X @ reg.coef_)))
+    print(f"Sigma regression: {sigma_regr:.4f}")
+    print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
+
+    return torch.from_numpy(X).float(), torch.from_numpy(y).float(), torch.from_numpy(coefficients).float()
+    # return X, y, coefficients
+
+
 def build_flow_model(d):
     print("Defining the flows")
     base_dist = StandardNormal(shape=[d])
     transforms = []
     num_layers = 5
     for _ in range(num_layers):
-        InverseTransform(transforms.append(NaiveLinear(features=d)))
-        InverseTransform(transforms.append(ScalarScale(scale=2)))
-        InverseTransform(transforms.append(ScalarShift(shift=1.5)))
+        transforms.append(InverseTransform(NaiveLinear(features=d)))
+        transforms.append(InverseTransform(ScalarScale(scale=2)))
+        transforms.append(InverseTransform(ScalarShift(shift=1.5)))
+        transforms.append(InverseTransform(ActNorm(features=d)))
+
     transforms = transforms[::-1]
     transform = CompositeTransform(transforms)
     model = Flow(transform, base_dist)
@@ -155,34 +190,42 @@ def build_flow_model(d):
 
 def main():
     lamda = 1
-    dimension, last_zero_indices = 2, 2
-    data_sample_size = 30
+    dimension, last_zero_indices = 5, 5
+    data_sample_size = 7
     noise = 0.1
     print(f"============= Parameters ======== \n"
           f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
           f"num_samples:{data_sample_size}, noise:{noise}\n")
 
-    X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
+    datadim = 5
+    n_samples = 7
+    sigma_regr = 2.0
+    X, Y, W = generate_regression_dataset(n_samples, datadim, datadim, sigma_regr)
+    # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
     flows = build_flow_model(dimension)
+    variance = torch.tensor(4)
 
-    num_iter = 1000
+    num_iter = 5000
     q_sample_size = 100
     flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
-    View.plot_loss(losses)
+    # View.plot_loss(losses)
 
-    q_samples = flows.sample(100)
+    q_samples = flows.sample(1000)
     sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
     fixed = W.tolist()
 
     flows = build_flow_model(dimension)
     flows, losses = train_2(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
-    q_samples = flows.sample(100)
+    q_samples = flows.sample(1000)
     view_samples = q_samples.detach().numpy()
     # View.plot_mvn_2(view_samples)
     sample_mean = torch.mean(q_samples, dim=0).tolist()
 
     for i in range(dimension):
         print(f"Index {i}: {fixed[i]} Fixed sigma W: {sample_mean_1[i]} Student-t W: {sample_mean[i]}")
+
+
+    print("End")
 
     # w_samples_list, lambda_list, loss_list = sample_Ws(flows, q_sample_size, dimension, 1, 10, variance, 10)
     # print(w_samples_list)
