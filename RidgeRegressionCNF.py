@@ -60,20 +60,20 @@ def vectorized_log_likelihood_t_distribution_unnormalized(Ws, d, X, Y):
     return log_likelihood
 
 
-def vectorized_log_ridge_prior_unnormalized(Ws, sigma, lambdas_exp):
+def vectorized_log_ridge_prior_unnormalized(Ws, sigma, lambdas_exp, d):
     variance = torch.tensor(sigma) ** 2
     lambdas_list = 10 ** lambdas_exp
     squared_weights = (Ws * Ws).sum(dim=2)
-    term_1 = -0.5 * (1 / variance) * squared_weights
-    log_prior = lambdas_list * term_1
+    term_1 = -0.5 * d * (torch.log(2 * torch.pi * variance) - torch.log(lambdas_list))
+    term_2 = lambdas_list * (-0.5 * (1 / variance) * squared_weights)
+    log_prior = term_1 + term_2
     return log_prior
 
 
 def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, likelihood_sigma):
     # proportional to p(Samples|q) * p(q)
     log_likelihood = vectorized_log_likelihood_unnormalized(q_samples, X, Y, likelihood_sigma)
-    # log_likelihood = vectorized_log_likelihood_t_distribution_unnormalized(q_samples, d, X, Y)
-    log_prior = vectorized_log_ridge_prior_unnormalized(q_samples, likelihood_sigma, lambdas_exp)
+    log_prior = vectorized_log_ridge_prior_unnormalized(q_samples, likelihood_sigma, lambdas_exp, d)
     log_posterior = log_likelihood + log_prior
     return log_posterior
 
@@ -98,38 +98,71 @@ def train_for_fixed_lambda(flows, d, X, Y, variance, epochs, n, fixed_lambda_exp
     return flows, losses
 
 
-def train_CNF(flows, d, X, Y, likelihood_sigma, epochs, n, context_size=100,
+def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, context_size=100,
               lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
+    print("Starting training the flows")
     file_name = f'CNF_d{d}_n{n}_e{epochs}_lmin{lambda_min_exp}_lmax{lambda_max_exp}'
 
     optimizer = optim.Adam(flows.parameters(), lr=lr, eps=1e-8)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    print("Starting training the flows")
     losses = []
-    # torch.set_anomaly_enabled(True)
+
+    T0 = 5.0
+    Tn = 0.01
+    cool_step_iteration = 200
+    cool_num_iter = epochs // cool_step_iteration
+
+    def cooling_function(t):
+        if t < (cool_num_iter - 1):
+            k = t / (cool_num_iter - 1)
+            alpha = Tn / T0
+            return T0 * (alpha ** k)
+        else:
+            return Tn
 
     try:
         for epoch in range(epochs):
-            # print("==================================")
+            t = epoch // (epochs / cool_num_iter)
+            T = cooling_function(t=t)
+
             optimizer.zero_grad()
             uniform_lambdas = torch.rand(context_size).to(device)
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             context = lambdas_exp
             q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=n, context=context)
-            log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, likelihood_sigma)
-            loss = torch.mean(q_log_prob - log_p)
+            log_p = vectorized_log_posterior_unnormalized(q_samples, d, X_torch, Y_torch, lambdas_exp, likelihood_sigma)
+            loss = torch.mean(q_log_prob - (log_p / T))
             loss.backward()
 
             if epoch % 10 == 0 or epoch + 1 == epochs:
+                if epoch % cool_step_iteration == 0:
+                    print("Temperature: ", T)
                 print("Loss after iteration {}: ".format(epoch), loss.tolist())
             losses.append(loss.detach().item())
             torch.nn.utils.clip_grad_norm_(flows.parameters(), 1)
             optimizer.step()
 
             if epoch > 0 and epoch % (epochs // 50) == 0:
-                print(scheduler.get_last_lr())
+                print("Learning Rate: ", scheduler.get_last_lr())
                 scheduler.step()
+
+            next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
+            if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
+                solution_type = "Solution Path"
+                lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
+                View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
+
+                # log_marg_likelihood = compute_analytical_log_marginal_likelihood(X, Y, torch.zeros(d), torch.eye(d))
+                # print("Analytical Log_marginal_likelihood : ", log_marg_likelihood)
+                # print("Learned Log_marginal_likelihood : ", loss)
+
+                lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
+                                                                                      likelihood_sigma, 200, 100,
+                                                                                      lambda_min_exp, lambda_max_exp)
+                title = "Ridge-Regression-with-CNF_at_T1"
+                View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
+                                                            title)
 
     except KeyboardInterrupt:
         print("interrupted..")
@@ -322,14 +355,17 @@ def sample_Ws(flows, context_size, flow_sample_size, lambda_min_exp, lambda_max_
     return lambda_sorted, q_samples_sorted
 
 
-def compute_analytical_log_marginal_likelihood(X, y, a_0, b_0, μ_0, cov_0, N):
-    a_0 = torch.tensor(a_0)
+def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
+    N = len(X)
+    a_0 = torch.tensor(2 * N)
+    b_0 = torch.tensor(2 * N)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
-    a_N = a_0 + (N/2.)
-    b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(torch.matmul(μ_0.t(), Λ_N), μ_N))
-    term_1 = 1 / (2 * torch.pi)**(0.5 * N)
+    a_N = a_0 + (N / 2.)
+    b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
+        torch.matmul(μ_0.t(), Λ_N), μ_N))
+    term_1 = 1 / ((2 * torch.pi) ** (0.5 * N))
     term_2 = (Λ_0.det() / Λ_N.det()) ** 0.5
     term_3 = (b_0 ** a_0) / (b_N ** a_N)
     term_4 = (torch.exp(torch.lgamma(a_N))) / (torch.exp(torch.lgamma(a_0)))
@@ -364,6 +400,33 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
     return lambdas_sorted, q_samples_sorted, losses_sorted
 
 
+def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
+              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
+    original_W = W.tolist()
+    print("Original Parameters: ", original_W)
+    fixed_lambda_exp = torch.rand(1)
+    print("Fixed Lambda exponent: ", fixed_lambda_exp)
+
+    # ==================================================================
+    # train conditional flows
+
+    flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
+    flows.to(device)
+
+    flows, losses = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
+                              likelihood_sigma, epochs,
+                              q_sample_size,
+                              context_size, lambda_min_exp, lambda_max_exp,
+                              learning_rate)
+    solution_type = "MAP Solution Path with Simulated Annealing"
+    print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
+    lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
+    View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
+
+    solution_type = "MAP"
+    View.plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted, solution_type)
+
+
 def main():
     # Set the parameters
     epochs = 10000
@@ -375,6 +438,7 @@ def main():
     context_size = 1000
     lambda_min_exp = -3
     lambda_max_exp = 4
+    learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
           f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
@@ -388,40 +452,8 @@ def main():
     X_torch = X.to(device)
     Y_torch = Y.to(device)
 
-    original_W = W.tolist()
-    print("Original Parameters: ", original_W)
-    fixed_lambda_exp = torch.rand(1)
-    print("Fixed Lambda exponent: ", fixed_lambda_exp)
-
-    # ==================================================================
-    # train conditional flows
-
-    # flows = build_conditional_flow_model(dimension)
-    # flows = build_masked_sigmoid_conditional_flow_model(dimension)
-    flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
-    flows.to(device)
-
-    learning_rate = 1e-3
-    flows, losses = train_CNF(flows, dimension, X_torch, Y_torch,
-                              likelihood_sigma, epochs,
-                              q_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate
-                              )
-    print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
-    # View.plot_loss(losses)
-    lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
-    View.plot_flow_ridge_path_vs_ground_truth(X, Y,
-                                              lambda_sorted, q_samples_sorted, 1)
-
-    log_marg_likelihood = compute_analytical_log_marginal_likelihood(X, Y,  2 * len(X),  2 * len(X),
-                                              torch.zeros(dimension), torch.eye(dimension), len(X))
-    print("Log_marginal_likelihood : ", log_marg_likelihood)
-    lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                          likelihood_sigma, 100, 100,
-                                                                          lambda_min_exp, lambda_max_exp)
-    title = "Ridge-Regression-with-CNF"
-    View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2, title)
+    posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
+              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
 
 
 if __name__ == "__main__":

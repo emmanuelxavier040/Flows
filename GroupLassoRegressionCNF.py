@@ -1,34 +1,25 @@
-"""
-This is an example of posterior estimation using flows by minimizing the KL divergence with synthetic data.
-We use a Multi-variate normal distribution to generate X. We choose a fixed parameter W which can be used for a linear
-transformation of X to Y. We can add some noise to the observations finally giving Y = XW + noise. Our task is to infer
-about the posterior P(W | X,Y). We use linear flows to compute the KL-Divergence(q(W) || P*(W | X,Y)). Here P* is the
-un-normalized posterior which is equivalent to the un-normalized Gaussian likelihood * Gaussian prior.
-We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
-learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
-"""
-import os.path
-import math
-import random
-
 import numpy as np
 import scipy as sp
 import torch
-import tqdm
 from enflows.distributions.normal import StandardNormal
 from enflows.flows.base import Flow
 from enflows.nn.nets import ResidualNet
-from enflows.transforms import MaskedSumOfSigmoidsTransform
 from enflows.transforms.base import CompositeTransform, InverseTransform
-from enflows.transforms.conditional import ConditionalShiftTransform, ConditionalScaleTransform, ConditionalLUTransform, \
-    ConditionalSumOfSigmoidsTransform
+from enflows.transforms.conditional import ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
 from sklearn.linear_model import LinearRegression
 
 from torch import optim
 
+import GroupLassoRegressionCNF_withoutBetas
 import Visualizations as View
 
+import rpy2.robjects as robjects
+from rpy2.robjects.packages import importr
+import pandas as pd
+from rpy2.robjects import pandas2ri
+
+pandas2ri.activate()
 torch.manual_seed(11)
 np.random.seed(10)
 # torch.manual_seed(15)
@@ -50,35 +41,34 @@ def vectorized_log_likelihood_unnormalized(Ws, X, Y, likelihood_sigma):
     return log_likelihood
 
 
-def vectorized_log_prior_unnormalized(Ws, d, lambdas_exp, sigma):
-    variance = torch.tensor(sigma) ** 2
-    lambdas_list = 10 ** lambdas_exp
-    std_dev = torch.sqrt(variance)
-    term_1 = d * torch.log(lambdas_list / (2 * std_dev))
-    term_2 = -(lambdas_list / std_dev) * torch.norm(Ws, p=1, dim=-1)
-    log_prior = term_1 + term_2
-    return log_prior
+def sum_of_norms_of_W_groups(Ws, indices_list):
+    sum_tensor = torch.zeros(Ws.shape[: -1]).to(device)
+    for indices in indices_list:
+        sum_tensor = sum_tensor + torch.norm(Ws[:, :, indices], p=2, dim=-1)
+    return sum_tensor
 
 
-def vectorized_standard_laplace_log_prior_unnormalized(Ws, d, lambdas_exp):
+def vectorized_log_prior_unnormalized(Ws, d, grouped_indices_list, lambdas_exp, std_dev):
     lambdas_list = (10 ** lambdas_exp)
-    term_1 = d * torch.log(lambdas_list / 2.0)
-    term_2 = -lambdas_list * torch.norm(Ws, p=1, dim=-1)
+    G = len(grouped_indices_list)
+    sum_tensor = sum_of_norms_of_W_groups(Ws, grouped_indices_list)
+    term_1 = G * torch.log(lambdas_list / std_dev)
+    term_2 = -(lambdas_list / std_dev) * sum_tensor
     log_prior = term_1 + term_2
     return log_prior
 
 
-def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, likelihood_sigma):
+def vectorized_log_posterior_unnormalized(q_samples, d, grouped_indices_list, X, Y, lambdas_exp, likelihood_sigma):
     # proportional to p(Samples|q) * p(q)
     log_likelihood = vectorized_log_likelihood_unnormalized(q_samples, X, Y, likelihood_sigma)
-    # log_prior = vectorized_log_prior_unnormalized(q_samples, d, lambdas_exp, likelihood_sigma)
-    log_prior = vectorized_standard_laplace_log_prior_unnormalized(q_samples, d, lambdas_exp)
+    log_prior = vectorized_log_prior_unnormalized(q_samples, d, grouped_indices_list, lambdas_exp, likelihood_sigma)
     log_posterior = log_likelihood + log_prior
     return log_posterior
 
 
-def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, context_size=100,
+def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, context_size=100,
               lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
+
     optimizer = optim.Adam(flows.parameters(), lr=lr, eps=1e-8)
 
     print("Starting training the flows")
@@ -107,9 +97,9 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             context = lambdas_exp
             q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=n, context=context)
-            log_p = vectorized_log_posterior_unnormalized(q_samples, d, X_torch, Y_torch, lambdas_exp, likelihood_sigma)
+            log_p = vectorized_log_posterior_unnormalized(q_samples, d, grouped_indices_list, X_torch, Y_torch,
+                                                          lambdas_exp, likelihood_sigma)
             loss = torch.mean(q_log_prob - (log_p / T))
-            # loss = torch.mean(q_log_prob - log_p )
             loss.backward()
 
             if epoch % 10 == 0 or epoch + 1 == epochs:
@@ -122,17 +112,18 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-                solution_type = "Solution Path"
+                solution_type = "Group-Lasso-Solution Path"
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                                      likelihood_sigma, 100, 100,
+                                                                                      likelihood_sigma,
+                                                                                      grouped_indices_list, 100,
+                                                                                      100,
                                                                                       lambda_min_exp, lambda_max_exp)
-                View.plot_flow_lasso_path_vs_ground_truth(X, Y, lambdas_sorted,
-                                                          q_samples_sorted, likelihood_sigma ** 2, solution_type)
 
-                title = "Lasso-Regression-CNF"
+                View.plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list,
+                                                                lambdas_sorted, q_samples_sorted, solution_type)
+                title = "Group-Lasso-Regression-CNF"
                 View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
-                                                            title)
-                View.plot_lasso_path_variance(lambdas_sorted, q_samples_sorted)
+                                                            title, grouped_indices_list)
 
     except KeyboardInterrupt:
         print("interrupted..")
@@ -140,14 +131,42 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
     return flows, losses
 
 
-def generate_synthetic_data(d, l, n, noise):
+def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n, noise):
     # Define a Multivariate-Normal distribution and generate some real world samples X and Y
     print("Generating real-world samples : Sample_size:{} Dimensions:{}".format(n, d))
-    data_mean = torch.zeros(d)
-    data_cov = torch.eye(d)
-    data_mvn_dist = torch.distributions.MultivariateNormal(data_mean, data_cov)
+
     num_data_samples = torch.Size([n])
-    X = data_mvn_dist.sample(num_data_samples)
+
+    num_samples = n
+    X = torch.zeros((num_samples, d))
+    # g1_mean = torch.randn(num_samples, 1)
+    # X[:, [0, 2]] = g1_mean + torch.normal(mean=0, std=0.1, size=(num_samples, 2))
+    # g2_base = torch.distributions.Exponential(1).sample((num_samples, 1))
+    # X[:, [1, 3, 4]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, 3))
+    # g3_base = torch.rand(num_samples, 1) * 10
+    # X[:, [5, 6, 7, 8, 9]] = g3_base + torch.rand(num_samples, 5) * 0.1
+
+    g1_size = len(grouped_indices_list[0])
+    g1_mean = torch.normal(mean=10, std=3, size=(num_samples, g1_size))
+    X[:, grouped_indices_list[0]] = g1_mean + torch.normal(mean=0, std=0.1, size=(num_samples, g1_size))
+
+    g2_size = len(grouped_indices_list[1])
+    # g2_base = torch.distributions.Exponential(1).sample((num_samples, 1))
+    g2_base = torch.normal(mean=10, std=3, size=(num_samples, g2_size))
+    X[:, grouped_indices_list[1]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, g2_size))
+
+    g3_size = len(grouped_indices_list[2])
+    # g3_base = torch.rand(num_samples, 1)
+    # X[:, grouped_indices_list[2]] = g3_base + torch.rand(num_samples, g3_size)
+    g3_base = torch.normal(mean=10, std=3, size=(num_samples, g3_size))
+    X[:, grouped_indices_list[2]] = g3_base + torch.normal(mean=0, std=0.1, size=(num_samples, g3_size))
+
+    # 15, 100
+    for group_index in range(len(grouped_indices_list) - 3):
+        g_size = len(grouped_indices_list[group_index + 3])
+        g_base = torch.normal(mean=10, std=3, size=(num_samples, g_size))
+        X[:, grouped_indices_list[group_index + 3]] = g_base + torch.normal(mean=0, std=0.1, size=(num_samples, g_size))
+
     # W = torch.rand(d) * 20 - 10
     W = torch.randn(d)
 
@@ -157,8 +176,8 @@ def generate_synthetic_data(d, l, n, noise):
 
     print(W)
     # W = torch.tensor([1.5, 2.4, 0.3, 0.7])
-    if l < d:
-        W[-l:] = 0
+    # W[grouped_indices_list[zero_weight_group_index]] = 0
+
     v = torch.tensor(noise ** 2)
     delta = torch.randn(num_data_samples) * v
     # delta = torch.normal(0, noise ** 2, num_data_samples)
@@ -226,7 +245,25 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
     return model
 
 
-def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample_size, lambda_min_exp, lambda_max_exp):
+def print_original_vs_flow_learnt_parameters(d, fixed, flows, context=None):
+    sample_size = 10000
+    sample_mean = None
+    if context is None:
+        q_samples = flows.sample(sample_size)
+        sample_mean = torch.mean(q_samples, dim=0).tolist()
+    else:
+        context = context.to(device)
+        q_samples = flows.sample(sample_size, context=context.view(-1, 1))
+        sample_mean = torch.mean(q_samples[0], dim=0).tolist()
+        print("For Context : ", context)
+
+    print(f"Index ||  Original  ||  Fixed Lambda ")
+    for i in range(d):
+        print(f"Index {i}       :     {fixed[i]}      :       {sample_mean[i]}")
+
+
+def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, grouped_indices_list, context_size, flow_sample_size,
+                        lambda_min_exp, lambda_max_exp):
     d = X.shape[1]
     num_iter = 10
     lambdas, q_samples_list, losses = [], [], []
@@ -236,7 +273,8 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
             uniform_lambdas = torch.rand(context_size).to(device)
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             q_samples, q_log_probs = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
-            log_p_samples = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_exp, likelihood_sigma)
+            log_p_samples = vectorized_log_posterior_unnormalized(q_samples, d, grouped_indices_list, X, Y, lambdas_exp,
+                                                                  likelihood_sigma)
             loss = q_log_probs - log_p_samples
 
             lambdas.append((10 ** lambdas_exp).squeeze().cpu().detach().numpy())
@@ -253,7 +291,7 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
     return lambdas_sorted, q_samples_sorted, losses_sorted
 
 
-def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
+def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs, q_sample_size,
               context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
     dimension = X_torch[0].shape[0]
     original_W = W.tolist()
@@ -261,53 +299,98 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
 
     # ==================================================================
     # train conditional flows
+
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
 
-    flows, losses = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
+    flows, losses = train_CNF(flows, dimension, grouped_indices_list, X, Y, X_torch, Y_torch,
                               likelihood_sigma, epochs,
                               q_sample_size,
                               context_size, lambda_min_exp, lambda_max_exp,
                               learning_rate
                               )
+    # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     # View.plot_loss(losses)
-    solution_type = "MAP solution path"
+    # solution_type = "Group-Lasso-Solution Path"
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                          likelihood_sigma, 100, 100,
+                                                                          likelihood_sigma, grouped_indices_list, 100,
+                                                                          100,
                                                                           lambda_min_exp, lambda_max_exp)
-    View.plot_flow_lasso_path_vs_ground_truth(X, Y,
-                                              lambdas_sorted, q_samples_sorted, likelihood_sigma ** 2, solution_type)
-    solution_type="MAP"
-    View.plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y,
-                                                                        lambdas_sorted, q_samples_sorted, solution_type)
+    solution_type = "MAP"
+    View.plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list,
+                                                    lambdas_sorted, q_samples_sorted, solution_type)
+
+    View.plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambdas_sorted, q_samples_sorted)
+
+    View.plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, grouped_indices_list,
+                                                                              lambdas_sorted, q_samples_sorted,
+                                                                              solution_type)
+
+
+def get_bardet_data():
+    gglasso = importr('gglasso')
+    robjects.r('data(bardet)')
+    bardet = robjects.r['bardet']
+    X = np.array(bardet.rx2('x'))
+    y = np.array(bardet.rx2('y'))
+    X_df = pd.DataFrame(X)
+    y_series = pd.Series(y)
+    X_tensor = torch.tensor(X_df.values, dtype=torch.float32)
+    y_tensor = torch.tensor(y_series.values, dtype=torch.float32)
+
+    grouped_indices_list = [list(range(i, i + 5)) for i in range(0, 100, 5)]
+    W = torch.randn(100)
+
+    return X_tensor, y_tensor, grouped_indices_list, W
 
 
 def main():
-    epochs = 200
-    dimension, last_zero_indices = 5, 20
-    data_sample_size = 7
+    # Set the parameters
+    epochs = 10000
+    # dimension = 10
+    # grouped_indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
+    # zero_weight_group_index = 2
+
+    dimension = 20
+    # grouped_indices_list = [[0, 2], [1, 3, 4]]
+    # grouped_indices_list = [[0, 1], [2, 3, 4], [i for i in range(5, 20)]]
+    grouped_indices_list = [list(range(i, i + 5)) for i in range(0, dimension, 5)]
+
+    zero_weight_group_index = 1
+
+    data_sample_size = 150
     data_noise_sigma = 2.0
     likelihood_sigma = 2
     q_sample_size = 1
     context_size = 1000
-    lambda_min_exp = -3
-    lambda_max_exp = 2
+    lambda_min_exp = -2
+    lambda_max_exp = 4
     learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
-          f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
+          f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
-    # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, data_noise_sigma)
-
-    X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    X /= X.std(0)
+    X, Y, W, variance = generate_synthetic_data(dimension, grouped_indices_list, zero_weight_group_index,
+                                                data_sample_size, data_noise_sigma)
+    #
+    # X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
+    # X, Y, grouped_indices_list, W = get_bardet_data()
+    # X /= X.std(0)
+    X = (X - X.mean(0)) / X.std(0)
 
     X_torch = X.to(device)
     Y_torch = Y.to(device)
 
-    posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size, context_size,
+    posterior(X.detach().cpu().numpy(), Y.detach().cpu().numpy(), X_torch, Y_torch, likelihood_sigma,
+              grouped_indices_list, epochs, q_sample_size, context_size,
               lambda_min_exp, lambda_max_exp, learning_rate, W)
+    GroupLassoRegressionCNF_withoutBetas.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, 20000, q_sample_size, context_size,
+              lambda_min_exp, lambda_max_exp, learning_rate, W)
+
+    # GroupLassoRegressionCNF_withoutBetas.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list,
+    #                                                epochs, q_sample_size,
+    #                                                context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
 
 
 if __name__ == "__main__":

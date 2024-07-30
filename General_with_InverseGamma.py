@@ -25,16 +25,14 @@ np.random.seed(10)
 import Visualizations as View
 
 
-def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y):
+def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y, a_0, b_0):
     N = len(X)
     μ_0 = torch.zeros(d)
     cov_0 = torch.eye(d)
-    a_0 = torch.tensor(N)
-    b_0 = a_0
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
-    a_N = a_0 + (d / 2.)
+    a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
 
@@ -51,14 +49,14 @@ def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y):
     return log_t_unnormalized
 
 
-def train_with_student_t(flows, d, X, Y, epoch, q_sample_size):
+def train_posterior(flows, d, X, Y, epoch, q_sample_size, a_0, b_0):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows with Student-t likelihood")
     losses = []
     for i in range(epoch):
         optimizer.zero_grad()
         q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
-        log_likelihood = vectorized_log_t_distribution_unnormalized(q_samples, d, X, Y)
+        log_likelihood = vectorized_log_t_distribution_unnormalized(q_samples, d, X, Y, a_0, b_0)
         log_p = log_likelihood
         loss = torch.mean(q_log_prob - log_p)
         if i == 0 or i % 100 == 0 or i + 1 == epoch:
@@ -120,18 +118,15 @@ def compute_analytical_posterior_for_fixed_variance(X, Y, prior_mean, prior_cova
     return mean_np, cov_np
 
 
-def compute_posterior_t_distribution_parameters(X, y):
+def compute_posterior_t_distribution_parameters(X, y, a_0, b_0):
     N = len(X)
     d = X[0].shape[0]
-    dimension = X[0].shape[0]
-    μ_0 = torch.zeros(dimension)
-    cov_0 = torch.eye(dimension)
-    a_0 = torch.tensor(N)
-    b_0 = torch.tensor(N)
+    μ_0 = torch.zeros(d)
+    cov_0 = torch.eye(d)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
-    a_N = a_0 + (d / 2.)
+    a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
 
@@ -141,17 +136,15 @@ def compute_posterior_t_distribution_parameters(X, y):
     return mean, scale_matrix, df
 
 
-def compute_posterior_predictive_t_distribution_parameters(X_train, y_train, X_pred):
+def compute_posterior_predictive_t_distribution_parameters(X_train, y_train, X_pred, a_0, b_0):
     N = len(X_train)
     d = X_train[0].shape[0]
     μ_0 = torch.zeros(d)
     cov_0 = torch.eye(d)
-    a_0 = torch.tensor(N)
-    b_0 = torch.tensor(N)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X_train.t(), X_train) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X_train.t(), y_train)))
-    a_N = a_0 + (d / 2.)
+    a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y_train.t(), y_train) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_0.t(), Λ_N), μ_N))
 
@@ -164,9 +157,11 @@ def compute_posterior_predictive_t_distribution_parameters(X_train, y_train, X_p
 def posterior( X_train, Y_train, W, dimension):
     num_iter = 2000
     q_sample_size = 100
-
+    N = len(X_train)
     flows = build_flow_model(dimension)
-    flows, losses = train_with_student_t(flows, dimension, X_train, Y_train, num_iter, q_sample_size)
+    a_0 = torch.tensor(N)
+    b_0 = torch.tensor(N)
+    flows, losses = train_posterior(flows, dimension, X_train, Y_train, num_iter, q_sample_size, a_0, b_0)
     # View.plot_loss(losses)
 
     q_samples = flows.sample(10000)
@@ -175,7 +170,7 @@ def posterior( X_train, Y_train, W, dimension):
     for i in range(dimension):
         print(f"Index {i}: {fixed[i]} Student-t W: {sample_mean[i]}")
 
-    mean, scale_matrix, df = compute_posterior_t_distribution_parameters(X_train, Y_train)
+    mean, scale_matrix, df = compute_posterior_t_distribution_parameters(X_train, Y_train, a_0, b_0)
     View.plot_analytical_flow_posterior_t_distribution_on_grid(dimension, mean, scale_matrix, df, flows)
 
 
@@ -184,10 +179,12 @@ def posterior_predictive(X_train, Y_train, X_test, Y_test):
     y_sample_size = 100
     y_length = Y_test.shape[0]
     flows = build_flow_model(y_length)
-
+    N = len(X_train)
+    a_0 = torch.tensor(N)
+    b_0 = torch.tensor(N)
     # To complete --> Train posterior predictive
 
-    mean, scale_matrix, df = compute_posterior_predictive_t_distribution_parameters(X_train, Y_train, X_test)
+    mean, scale_matrix, df = compute_posterior_predictive_t_distribution_parameters(X_train, Y_train, X_test, a_0, b_0)
     View.plot_analytical_flow_posterior_predictive_t_distribution_on_grid(len(X_test), mean, scale_matrix, df, flows)
     print(mean)
     print(Y_test)

@@ -15,8 +15,8 @@ device = "cpu"
 
 CONTINUE_TRAINING = False
 
-os.makedirs("figures", exist_ok=True)
-os.makedirs("models", exist_ok=True)
+os.makedirs("../figures", exist_ok=True)
+os.makedirs("../models", exist_ok=True)
 
 base_dist = StandardNormal(shape=[2])
 MB_SIZE = 500

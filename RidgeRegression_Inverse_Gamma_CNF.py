@@ -35,23 +35,50 @@ print("Device used : ", device)
 
 
 def vectorized_log_posterior_unnormalized(Ws, d, X, Y, a_0, b_0):
-    μ_0 = torch.zeros(d)
-    cov_0 = torch.eye(d)
+    N = len(X)
+    μ_0 = torch.zeros(d).to(device)
+    cov_0 = torch.eye(d).to(device)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
-    a_N = a_0 + (d / 2)
+    a_N = a_0 + (N / 2)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
 
-    log_t_unnormalized = torch.log(gamma(a_N + d/2) / gamma(a_N))
-    log_t_unnormalized = log_t_unnormalized + a_N * torch.log(b_N)
+    log_t_unnormalized = 0
+    # log_t_unnormalized = log_t_unnormalized + torch.log(gamma(a_N + d/2) / gamma(a_N))
+    # log_t_unnormalized = log_t_unnormalized + a_N * torch.log(b_N)
     log_t_unnormalized = log_t_unnormalized + -0.5 * d * torch.log(torch.tensor(2 * torch.pi))
-    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(torch.inverse(Λ_N)))
+    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(torch.inverse(Λ_N).to(device)))
 
     term_4 = Ws - μ_N
     term_3 = (torch.matmul(term_4, Λ_N) * term_4).sum(dim=-1)
-    log_t_unnormalized = log_t_unnormalized + -(a_N + d/2) * torch.log(b_N + 0.5 * term_3)
+    log_t_unnormalized = log_t_unnormalized + -(a_N + d / 2) * torch.log(b_N + 0.5 * term_3)
+
+    return log_t_unnormalized
+
+
+def vectorized_log_posterior_lambda_inverse_gamma_unnormalized(Ws, d, X, Y, a_0, lambda_exp):
+    N = len(X)
+    μ_0 = torch.zeros(d).to(device)
+    cov_0 = ((1 / 10**lambda_exp).unsqueeze(-2)) * torch.eye(d).unsqueeze(0).to(device)
+    b_0 = torch.tensor(N).to(device)
+    Λ_0 = torch.inverse(cov_0)
+    Λ_N = torch.matmul(X.t(), X) + Λ_0
+    μ_N = torch.bmm(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)).unsqueeze(-1)).squeeze(-1)
+    a_N = a_0 + (N / 2)
+    b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0).unsqueeze(-1)
+                       - torch.bmm(torch.bmm(μ_N.unsqueeze(1), Λ_N), μ_N.unsqueeze(-1)).squeeze(1)).squeeze(0)
+
+    log_t_unnormalized = 0
+    # log_t_unnormalized = log_t_unnormalized + torch.log(gamma(a_N + d/2) / gamma(a_N))
+    # log_t_unnormalized = log_t_unnormalized + a_N * torch.log(b_N)
+    log_t_unnormalized = log_t_unnormalized + -0.5 * d * torch.log(torch.tensor(2 * torch.pi))
+    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(torch.inverse(Λ_N).to(device)))
+
+    term_4 = Ws - μ_N
+    term_3 = (torch.matmul(term_4, Λ_N) * term_4).sum(dim=-1)
+    log_t_unnormalized = log_t_unnormalized + -(a_N + d / 2) * torch.log(b_N + 0.5 * term_3)
 
     return log_t_unnormalized
 
@@ -64,6 +91,7 @@ def train_CNF(flows, d, X, Y, epochs, n, context_size=100,
 
     print("Starting training the flows")
     losses = []
+    loss = 0
     try:
         for epoch in range(epochs):
             # print("==================================")
@@ -76,6 +104,46 @@ def train_CNF(flows, d, X, Y, epochs, n, context_size=100,
 
             q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=n, context=context)
             log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, a_0, b_0)
+            loss = torch.mean(q_log_prob - log_p)
+            loss.backward()
+
+            if epoch % 10 == 0 or epoch + 1 == epochs:
+                print("Loss after iteration {}: ".format(epoch), loss.tolist())
+            losses.append(loss.detach().item())
+            torch.nn.utils.clip_grad_norm_(flows.parameters(), 1)
+            optimizer.step()
+
+    except KeyboardInterrupt:
+        print("interrupted..")
+
+    log_marg_likelihood = compute_analytical_log_marginal_likelihood(X, Y, torch.zeros(d).to(device), torch.eye(d).to(device))
+    print("Analytical Log_marginal_likelihood : ", log_marg_likelihood)
+    print("Learned Log_marginal_likelihood : ", loss)
+    # save_model(flows, file_name)
+
+    return flows, losses
+
+
+def train_posterior_with_lambda_inverse_gamma(flows, d, X, Y, epochs, n, context_size=100,
+                                              a_0_min=-1, a_0_max=2, lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
+    file_name = f'CNF_d{d}_n{n}_e{epochs}_a0min{a_0_min}_a0max{a_0_max}'
+
+    optimizer = optim.Adam(flows.parameters(), lr=lr, eps=1e-8)
+
+    print("Starting training the flows")
+    losses = []
+    try:
+        for epoch in range(epochs):
+            # print("==================================")
+            optimizer.zero_grad()
+            uniform_a_0 = torch.rand(context_size).to(device)
+            a_0 = (uniform_a_0 * (a_0_max - a_0_min) + a_0_min).view(-1, 1)
+            uniform_lambda = torch.rand(context_size).to(device)
+            lambda_exp = (uniform_lambda * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
+            context = torch.cat((a_0, lambda_exp), 1)
+
+            q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=n, context=context)
+            log_p = vectorized_log_posterior_lambda_inverse_gamma_unnormalized(q_samples, d, X, Y, a_0, lambda_exp)
             loss = torch.mean(q_log_prob - log_p)
             loss.backward()
 
@@ -234,6 +302,8 @@ def print_original_vs_flow_learnt_parameters(d, fixed, flows, context=None):
 
 
 def sample_Ws(flows, context_size, flow_sample_size, a_0_min, a_0_max, b_0_min, b_0_max):
+    # b_0_min = 1
+    # b_0_max = 1
     uniform_a_0 = torch.rand(context_size).to(device)
     a_0 = (uniform_a_0 * (a_0_max - a_0_min) + a_0_min).view(-1, 1)
     uniform_b_0 = torch.rand(context_size).to(device)
@@ -241,22 +311,24 @@ def sample_Ws(flows, context_size, flow_sample_size, a_0_min, a_0_max, b_0_min, 
     context = torch.cat((a_0, b_0), 1)
     q_samples, q_log_ps = flows.sample_and_log_prob(flow_sample_size, context=context)
 
-    a_0 = a_0.cpu().detach().numpy()
-    b_0 = b_0.cpu().detach().numpy()
+    a_0_np = a_0.cpu().detach().numpy()
+    b_0_np = b_0.cpu().detach().numpy()
+    q_samples = q_samples.cpu().detach().numpy()
     q_log_ps = q_log_ps.cpu().detach().numpy()
-    return a_0, b_0, q_samples, q_log_ps
+    return a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps
 
 
 def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
     N = len(X)
-    a_0 = torch.tensor(2*N)
+    a_0 = torch.tensor(2 * N)
     b_0 = a_0
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
     μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
-    a_N = a_0 + (N/2.)
-    b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(torch.matmul(μ_0.t(), Λ_N), μ_N))
-    term_1 = 1 / (2 * torch.pi)**(0.5 * N)
+    a_N = a_0 + (N / 2.)
+    b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
+        torch.matmul(μ_0.t(), Λ_N), μ_N))
+    term_1 = 1 / (2 * torch.pi) ** (0.5 * N)
     term_2 = (Λ_0.det() / Λ_N.det()) ** 0.5
     term_3 = (b_0 ** a_0) / (b_N ** a_N)
     term_4 = (torch.exp(torch.lgamma(a_N))) / (torch.exp(torch.lgamma(a_0)))
@@ -264,54 +336,65 @@ def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
     return log_marginal_likelihood
 
 
-def sample_Ws_for_plots(flows, X, Y, context_size, flow_sample_size, a_0_min, a_0_max):
-    d = X.shape[1]
-    num_iter = 10
-    a_0s, q_samples_list, losses = [], [], []
+def compute_analytical_posterior_t_distribution_parameters(X, Y, a_0, b_0):
+    d = X[0].shape[0]
+    N = len(X)
+    μ_0 = torch.zeros(d).to(device)
+    cov_0 = torch.eye(d).to(device)
+    Λ_0 = torch.inverse(cov_0)
+    Λ_N = torch.matmul(X.t(), X) + Λ_0
+    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
+    a_N = a_0 + (N / 2)
+    b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
+        torch.matmul(μ_N.t(), Λ_N), μ_N))
 
-    with torch.no_grad():
-        for _ in range(num_iter):
-            uniform_a_0 = torch.rand(context_size).to(device)
-            a_0 = (uniform_a_0 * (a_0_max - a_0_min) + a_0_min).view(-1, 1)
-            q_samples, q_log_probs = flows.sample_and_log_prob(flow_sample_size, context=a_0)
-            log_p_samples = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, a_0)
-            loss = q_log_probs - log_p_samples
+    mean = μ_N
 
-            a_0s.append(a_0.squeeze().cpu().detach().numpy())
-            q_samples_list.append(q_samples.cpu().detach().numpy())
-            losses.append(loss.cpu().detach().numpy())
+    # Computing the scale matrices for all pairs of (a_0, b_0)s
+    term_1 = (b_N / a_N)
+    term_2 = torch.inverse(Λ_N)
+    term_3 = term_1.view(term_1.shape[0], *([1] * len(term_2.shape)))
+    scale_matrices = term_3 * term_2
 
-    q_samples_list, a_0s, losses = (np.concatenate(q_samples_list, 0),
-                                       np.concatenate(a_0s, 0), np.concatenate(losses, 0))
-    a_0s_sort_order = a_0s.argsort()
+    dfs = 2 * a_N
 
-    lambdas_sorted = a_0s[a_0s_sort_order]
-    q_samples_sorted = q_samples_list[a_0s_sort_order]
-    losses_sorted = losses[a_0s_sort_order]
-    return lambdas_sorted, q_samples_sorted, losses_sorted
+    return mean.cpu().detach().numpy(), scale_matrices.cpu().detach().numpy(), dfs.cpu().detach().numpy()
+
+
+def sample_Ws_with_lambda(flows, context_size, flow_sample_size, lambda_min_exp, lambda_max_exp):
+    uniform_lambdas = torch.rand(context_size).to(device)
+    lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
+    q_samples, log_ps = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
+    _, lambda_sort_order = lambdas_exp.sort(0)
+
+    # Reshaping the lambda_sort_order
+    lambda_sort_order = lambda_sort_order.squeeze()
+
+    lambda_exp_sorted = lambdas_exp[lambda_sort_order]
+    lambda_sorted = 10 ** lambda_exp_sorted.squeeze().cpu().detach().numpy()
+    q_samples_sorted = q_samples[lambda_sort_order].cpu().detach().numpy()
+    return lambda_sorted, q_samples_sorted
 
 
 def main():
     # Set the parameters
     epochs = 10000
     dimension, last_zero_indices = 3, 20
-    data_sample_size = 100
+    data_sample_size = 3
     data_noise_sigma = 2.0
-    likelihood_sigma = 2
     q_sample_size = 1
     context_size = 1000
-    a_0_min=0
-    a_0_max=30
-    b_0_min=0
-    b_0_max=30
+    a_0_min = 0
+    a_0_max = 10
+    b_0_min = 0
+    b_0_max = 10
     learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
           f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
-          f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
+          f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}\n")
 
-    # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
-
+    # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, data_noise_sigma)
     X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
     X /= X.std(0)
 
@@ -333,16 +416,60 @@ def main():
 
     # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     # View.plot_loss(losses)
-    a_0, b_0, q_samples, q_log_ps = sample_Ws(flows, 100, 150,  a_0_min, a_0_max, b_0_min, b_0_max)
-    View.plot_flow_ridge_inverse_gamma_parameters(a_0, b_0, q_log_ps)
+    # a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    # View.plot_flow_ridge_inverse_gamma_parameters_1(dimension, mean, scale_matrices, dfs, a_0_np, b_0_np, q_samples,
+    #                                               q_log_ps)
 
-    # log_marg_likelihood = compute_analytical_log_marginal_likelihood(X, Y, torch.zeros(dimension), torch.eye(dimension))
-    # print("Log_marginal_likelihood : ", log_marg_likelihood)
+    b_0_min = 0
+    b_0_max = 0
+    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+                                                    q_log_ps, flows,"b_0")
 
-    # lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-    #                                                                       100, 100,
-    #                                                                       lambda_min_exp, lambda_max_exp)
-    # View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2)
+    b_0_min = 1
+    b_0_max = 1
+    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+                                                    q_log_ps, flows, "b_1")
+
+    b_0_min = 2
+    b_0_max = 2
+    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+                                                    q_log_ps, flows, "b_2")
+
+    b_0_min = 5
+    b_0_max = 5
+    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+                                                    q_log_ps, flows, "b_5")
+
+
+    # ##########################  Train posterior on a_0 and lambda ##########################
+    # lambda_min_exp = -3
+    # lambda_max_exp = 4
+    # flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
+    # flows, losses = train_posterior_with_lambda_inverse_gamma(flows, dimension, X_torch, Y_torch, epochs,
+    #                                                           q_sample_size, context_size, a_0_min, a_0_max, lambda_min_exp,
+    #                                                           lambda_max_exp,
+    #                                                           learning_rate)
+    # a_0, lambda_exp, a_0_np, lambda_exp_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150,
+    #                                                                         a_0_min, a_0_max, lambda_min_exp, lambda_max_exp)
+    # lambda_exp = 10**lambda_exp
+    # # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, lambda_exp)
+    # # View.plot_flow_ridge_inverse_gamma_parameters_1(dimension, mean, scale_matrices, dfs, a_0_np, lambda_exp_np, q_samples,
+    # #                                               q_log_ps)
+    #
+    # _, lambda_sort_order = lambda_exp.sort(0)
+    # lambda_exp_sorted = lambda_exp[lambda_sort_order]
+    # lambda_sorted = lambda_exp_sorted.squeeze().cpu().detach().numpy()
+    # q_samples_sorted = q_samples[lambda_sort_order].squeeze(1)
+    # View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, "lambda_")
 
 
 if __name__ == "__main__":
