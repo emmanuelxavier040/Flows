@@ -56,9 +56,14 @@ df.comp <- data.frame(
 
 # group lasso
 print("Hi ====================")
-print(X)
-paste(y)
+# print(X)
+# paste(y)
 gr_cv <- cv.gglasso(x=X, y=y, group=v.group,
+            loss="ls", pred.loss="L2",
+            intercept = F, nfolds=5)
+paste(gr_cv$lambda.min, gr_cv$lambda.1se)
+
+gr_cv <- cv.gglasso(x=X, y=y, group=v.group, lambda=c(1.2, 0.3, 0.5, 8, 7, 6, 5, 0.04, 300, 2, 1),
             loss="ls", pred.loss="L2",
             intercept = F, nfolds=5)
 # x11(); plot(gr_cv)

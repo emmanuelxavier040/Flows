@@ -7,7 +7,7 @@ from mpl_toolkits.mplot3d import axes3d
 from scipy.interpolate import griddata
 
 import numpy as np
-
+import scipy.sparse
 from scipy.interpolate import griddata
 from scipy.stats import multivariate_normal, multivariate_t
 from sklearn.linear_model import lasso_path, enet_path, LassoCV, RidgeCV
@@ -26,7 +26,10 @@ r = robjects.r
 r['source']('GLasso.R')
 
 glasso_path = robjects.globalenv['GLassoPath']
-cv_gglasso = robjects.globalenv['CVLasso']
+cv_gglasso = robjects.globalenv['CVGLasso']
+glm = robjects.globalenv['Glm']
+glmnet = robjects.globalenv['Glmnet']
+cv_glmnet = robjects.globalenv['CVGlmnet']
 
 
 def plot_loss(loss_values):
@@ -275,33 +278,22 @@ def plot_flow_ridge_inverse_gamma_parameters(dimension, mean, scale_matrices, df
     C_flow = variance_list[:, 0]
     C = np.exp(q_log_ps.mean(axis=1))
 
-    # Assuming A, B, and C are already defined as numpy arrays
-
-    # Create grid data for the contour plot
     grid_x, grid_y = np.mgrid[min(A):max(A):100j, min(B):max(B):100j]
     grid_z = griddata((A, B), C, (grid_x, grid_y), method='cubic')
-
-    # Create 3D plot
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-
-    # Plot the surface
     surf = ax.plot_surface(grid_x, grid_y, grid_z, cmap='viridis', edgecolor='none', alpha=0.7)
 
-    # Add contour plot on the XY plane
     ax.contourf(grid_x, grid_y, grid_z, zdir='z', offset=0, cmap='viridis', alpha=0.5)
-
-    # Add contour plot on the surface
     ax.contour3D(grid_x, grid_y, grid_z, 50, cmap='viridis')
-
-    # Set labels
-    ax.set_xlabel('A (X-axis)')
-    ax.set_ylabel('B (Y-axis)')
-    ax.set_zlabel('C (Z-axis)')
+    plt.xlabel(r'$\lambda$')
+    ax.set_xlabel(r'$a_0$')
+    ax.set_ylabel(r'$b_0$')
+    ax.set_zlabel(r'Probability of $\beta$')
     ax.set_zlim(0, np.max(C))
 
-    # Show plot
     plt.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+    plt.title("Inverse Gamma Hyper parameters Vs Posterior for Ridge Regression")
     plt.show()
 
     return
@@ -333,6 +325,29 @@ def convert_group_indices_for_gglasso(grouped_indices_list):
     return np.array(group)
 
 
+def plot_poisson_data():
+
+    np.random.seed(42)
+    n_samples = 100
+    X = np.random.normal(size=(n_samples, 2))
+    beta = np.array([0.5, 1.5])
+    Z = np.exp(X @ beta)
+    Y = np.random.poisson(lam=Z)
+
+    glm(X, Y, X)
+
+    # plt.figure(figsize=(10, 6))
+    # plt.scatter(X[:,1], Y, label='Observed Poisson Data', alpha=0.6)
+    # plt.plot(X[:,1], Z, color='red', label='True Mean (Z)', linestyle='--')
+    # plt.xlabel('Predictor X')
+    # plt.ylabel('Response Y / Mean Z')
+    # plt.legend()
+    # plt.title('Poisson Data with Predictor X')
+    # plt.show()
+    return
+
+# plot_poisson_data()
+
 # ============================= Solution Paths plots =============================
 
 
@@ -356,7 +371,18 @@ def plot_flow_lasso_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 
     x_flow = lambda_sorted
     y_flow = q_samples_sorted
 
-    alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
+    # alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
+    W_glmnet = glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambdas=lambda_sorted, alpha=1)
+    alphas_lasso = lambda_sorted
+
+    r_matrix = W_glmnet[1]
+    data = robjects.conversion.rpy2py(r_matrix.slots['x'])
+    indices = robjects.conversion.rpy2py(r_matrix.slots['i'])
+    indptr = robjects.conversion.rpy2py(r_matrix.slots['p'])
+    shape = tuple(robjects.conversion.rpy2py(r_matrix.slots['Dim']))
+    sparse_matrix = scipy.sparse.csc_matrix((data, indices, indptr), shape=shape)
+    coefs_lasso = sparse_matrix.toarray()[:, ::-1]
+
     alphas_lasso = alphas_lasso * n / variance
     x_lasso_path = alphas_lasso
     y_lasso_path = coefs_lasso
@@ -382,6 +408,47 @@ def plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list, lambd
             beta_group_map[beta_index] = group_index
 
     plot_title = 'Group Lasso Regression with CNF - ' + solution_type
+
+    plot_flow_path_vs_ground_truth(lambda_glasso, coeff_glasso, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso=True)
+
+
+def plot_flow_poisson_regression_path_vs_ground_truth(X, Z, lambdas_sorted, q_samples_sorted, solution_type, is_ridge_posterior=True):
+    x_flow = lambdas_sorted
+    y_flow = q_samples_sorted
+
+    W_glmnet = glmnet(X, Z, lambdas=lambdas_sorted, alpha=0 if is_ridge_posterior else 1, family="poisson")
+    alphas_ridge = lambdas_sorted * X.shape[0]
+
+    r_matrix = W_glmnet[1]
+    data = robjects.conversion.rpy2py(r_matrix.slots['x'])
+    indices = robjects.conversion.rpy2py(r_matrix.slots['i'])
+    indptr = robjects.conversion.rpy2py(r_matrix.slots['p'])
+    shape = tuple(robjects.conversion.rpy2py(r_matrix.slots['Dim']))
+    sparse_matrix = scipy.sparse.csc_matrix((data, indices, indptr), shape=shape)
+    coefs_ridge = sparse_matrix.toarray()[:, ::-1]
+    coefs_ridge = coefs_ridge
+
+    plot_title = 'Poisson Ridge Lasso Regression with CNF - ' + solution_type
+
+    plot_flow_path_vs_ground_truth(alphas_ridge, coefs_ridge, x_flow, y_flow, plot_title, beta_group_map={}, group_lasso=False)
+
+
+def plot_flow_group_poisson_path_vs_ground_truth(X, Y, grouped_indices_list, lambda_sorted, q_samples_sorted, solution_type):
+
+    lambda_flow = lambda_sorted
+    coeff_flow = q_samples_sorted
+
+    group = convert_group_indices_for_gglasso(grouped_indices_list)
+    W_glasso = glasso_path(X, Y, group, np.array(lambda_sorted))
+    lambda_glasso = lambda_sorted
+    coeff_glasso = q_samples_sorted.mean(axis=1).T
+
+    beta_group_map = {}
+    for group_index, group in enumerate(grouped_indices_list):
+        for beta_index in group:
+            beta_group_map[beta_index] = group_index
+
+    plot_title = 'Group Poisson Regression with CNF - ' + solution_type
 
     plot_flow_path_vs_ground_truth(lambda_glasso, coeff_glasso, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso=True)
 
@@ -592,7 +659,7 @@ def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, v
 
     if "ridge" in title.lower():
         alphas = lambda_sorted
-        alpha_ridge_cv = RidgeCV(alphas=alphas, cv=5).fit(X, Y).alpha_
+        alpha_ridge_cv = RidgeCV(alphas=alphas, cv=5, fit_intercept=False).fit(X, Y).alpha_
         print("Ridge CV lambda: ", alpha_ridge_cv)
         best_lambda_cv = 10 ** alpha_ridge_cv
         print("Ridge CV lambda rescaled: ", best_lambda_cv)
@@ -607,10 +674,14 @@ def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, v
         best_lambda_cv = cv[7]
 
     else:
+        # fit = cv_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy().reshape(-1, 1), lambda_sorted, 1)
+        # best_lambda_cv = fit.rx2('lambda.min')[0]
         alphas = lambda_sorted * variance / n
-        alpha_lasso_cv = LassoCV(alphas=alphas, cv=5).fit(X, Y).alpha_
+        reg = LassoCV(alphas=alphas, cv=7, fit_intercept=False).fit(X, Y)
+        alpha_lasso_cv = reg.alpha_
+        print("Coefficient selected from CV    : ", reg.coef_)
         print("Lasso CV lambda: ", alpha_lasso_cv)
-        best_lambda_cv = 10 ** (alpha_lasso_cv * n / variance)
+        best_lambda_cv = alpha_lasso_cv * n / variance
         print("Lasso CV lambda rescaled: ", best_lambda_cv)
         label_lambda_cv = '$\lambda* LassoCV$'
 
@@ -654,6 +725,7 @@ def plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, sc
     sample_size = 50
 
     for i in range(dimension):
+        # We are doing this for just one context value at index 0
         ax_min = mean[i] - 3 * np.sqrt(scale_matrices[0][i, i])
         ax_max = mean[i] + 3 * np.sqrt(scale_matrices[0][i, i])
         points = np.linspace(ax_min, ax_max, sample_size)
@@ -666,9 +738,14 @@ def plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, sc
     # grids = torch.from_numpy(grids)
     flow_inputs = torch.cat([torch.from_numpy(grid.reshape(-1, 1)) for grid in grids], dim=1)
     context = torch.cat((a_0, b_0), 1)
-    flow_density = flows.log_prob(flow_inputs, context=context)
+    flow_density = flows.log_prob(flow_inputs.unsqueeze(0), context=context[0].unsqueeze(0))
+
+    # for i in range(10):
+    #     flows.log_prob(flow_inputs[:context.shape[0]][i].unsqueeze(0), context=context[0].unsqueeze(0))
+
     reshape_argument = [sample_size for _ in range(dimension)]
     flow_density_reshaped = np.exp(flow_density[0].reshape(*reshape_argument))
+
 
     analytical_marginals = []
     flow_marginals = []

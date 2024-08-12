@@ -1,12 +1,3 @@
-"""
-This is an example of posterior estimation using flows by minimizing the KL divergence with synthetic data.
-We use a Multi-variate normal distribution to generate X. We choose a fixed parameter W which can be used for a linear
-transformation of X to Y. We can add some noise to the observations finally giving Y = XW + noise. Our task is to infer
-about the posterior P(W | X,Y). We use linear flows to compute the KL-Divergence(q(W) || P*(W | X,Y)). Here P* is the
-un-normalized posterior which is equivalent to the un-normalized Gaussian likelihood * Gaussian prior.
-We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
-learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
-"""
 import os.path
 
 import numpy as np
@@ -162,7 +153,7 @@ def train_posterior_with_lambda_inverse_gamma(flows, d, X, Y, epochs, n, context
 
 
 def load_model(dimensions, model_path):
-    model = build_conditional_flow_model(dimensions)
+    model = build_sum_of_sigmoid_conditional_flow_model(dimensions)
     model.load_state_dict(torch.load(model_path))
     model.eval()
     return model
@@ -231,27 +222,6 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
 
     return torch.from_numpy(X).float(), torch.from_numpy(y).float(), torch.from_numpy(coefficients).float()
     # return X, y, coefficients
-
-
-def build_conditional_flow_model(d):
-    context_features = 16
-    print("Defining the flows")
-
-    base_dist = StandardNormal(shape=[d])
-    transforms = []
-    num_layers = 10
-    for _ in range(num_layers):
-        transforms.append(InverseTransform(ConditionalLUTransform(features=d, hidden_features=64,
-                                                                  context_features=context_features)))
-        transforms.append(InverseTransform(ConditionalScaleTransform(features=d, hidden_features=64,
-                                                                     context_features=context_features)))
-        transforms.append(InverseTransform(ConditionalShiftTransform(features=d, hidden_features=64,
-                                                                     context_features=context_features)))
-    transform = CompositeTransform(transforms)
-    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=64,
-                                num_blocks=1, activation=torch.nn.functional.relu)
-    model = Flow(transform, base_dist, embedding_net=embedding_net)
-    return model
 
 
 def build_sum_of_sigmoid_conditional_flow_model(d):
@@ -378,7 +348,7 @@ def sample_Ws_with_lambda(flows, context_size, flow_sample_size, lambda_min_exp,
 
 def main():
     # Set the parameters
-    epochs = 10000
+    epochs = 1000
     dimension, last_zero_indices = 3, 20
     data_sample_size = 3
     data_noise_sigma = 2.0
@@ -420,6 +390,8 @@ def main():
     # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
     # View.plot_flow_ridge_inverse_gamma_parameters_1(dimension, mean, scale_matrices, dfs, a_0_np, b_0_np, q_samples,
     #                                               q_log_ps)
+    # View.plot_flow_ridge_inverse_gamma_parameters(dimension, mean, scale_matrices, dfs, a_0_np, b_0_np, q_samples, q_log_ps)
+
 
     b_0_min = 0
     b_0_max = 0
@@ -427,27 +399,27 @@ def main():
     mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
     View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
                                                     q_log_ps, flows,"b_0")
-
-    b_0_min = 1
-    b_0_max = 1
-    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
-    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
-    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
-                                                    q_log_ps, flows, "b_1")
-
-    b_0_min = 2
-    b_0_max = 2
-    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
-    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
-    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
-                                                    q_log_ps, flows, "b_2")
-
-    b_0_min = 5
-    b_0_max = 5
-    a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
-    mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
-    View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
-                                                    q_log_ps, flows, "b_5")
+    #
+    # b_0_min = 1
+    # b_0_max = 1
+    # a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    # View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+    #                                                 q_log_ps, flows, "b_1")
+    #
+    # b_0_min = 2
+    # b_0_max = 2
+    # a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    # View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+    #                                                 q_log_ps, flows, "b_2")
+    #
+    # b_0_min = 5
+    # b_0_max = 5
+    # a_0, b_0, a_0_np, b_0_np, q_samples, q_log_ps = sample_Ws(flows, 100, 150, a_0_min, a_0_max, b_0_min, b_0_max)
+    # mean, scale_matrices, dfs = compute_analytical_posterior_t_distribution_parameters(X_torch, Y_torch, a_0, b_0)
+    # View.plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, scale_matrices, dfs, a_0, b_0, a_0_np, b_0_np, q_samples,
+    #                                                 q_log_ps, flows, "b_5")
 
 
     # ##########################  Train posterior on a_0 and lambda ##########################

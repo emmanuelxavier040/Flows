@@ -137,36 +137,40 @@ def build_flow_model(d):
     return model
 
 
-lamda = 0.5
-dimension = 10
-# indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9], [i for i in range(10, 49)]]
-indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
-data_sample_size = 50
-last_zero_indices = 5
-noise = 0.05
-print(f"============= Parameters ======== \n"
-      f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
-      f"num_samples:{data_sample_size}, noise:{noise}\n")
+def main():
+    lamda = 0.5
+    dimension = 10
+    # indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9], [i for i in range(10, 49)]]
+    indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
+    data_sample_size = 50
+    last_zero_indices = 5
+    noise = 0.05
+    print(f"============= Parameters ======== \n"
+          f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
+          f"num_samples:{data_sample_size}, noise:{noise}\n")
+
+    X, Y, W, variance = generate_synthetic_data(dimension, data_sample_size, last_zero_indices, noise)
+
+    flows = build_flow_model(dimension)
+
+    num_iter = 1000
+    q_sample_size = 100
+    flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
+    # View.plot_loss(losses)
+    # q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
+    # lambdas_list = torch.ones(q_sample_size)
+    # log_p = vectorized_log_posterior_unnormalized(q_samples, dimension, X, Y, lambdas_list, variance)
+    q_samples = flows.sample(100)
+    sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
+    fixed = W.tolist()
+
+    flows, losses = train_2(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
+    q_samples = flows.sample(100)
+    sample_mean = torch.mean(q_samples, dim=0).tolist()
+
+    for i in range(dimension):
+        print(f"Index {i}: {fixed[i]} - {sample_mean_1[i]} - {sample_mean[i]}")
 
 
-X, Y, W, variance = generate_synthetic_data(dimension, data_sample_size, last_zero_indices, noise)
-
-flows = build_flow_model(dimension)
-
-num_iter = 1000
-q_sample_size = 100
-flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
-# View.plot_loss(losses)
-# q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
-# lambdas_list = torch.ones(q_sample_size)
-# log_p = vectorized_log_posterior_unnormalized(q_samples, dimension, X, Y, lambdas_list, variance)
-q_samples = flows.sample(100)
-sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
-fixed = W.tolist()
-
-flows, losses = train_2(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
-q_samples = flows.sample(100)
-sample_mean = torch.mean(q_samples, dim=0).tolist()
-
-for i in range(dimension):
-    print(f"Index {i}: {fixed[i]} - {sample_mean_1[i]} - {sample_mean[i]}")
+if __name__ == "__main__":
+    main()

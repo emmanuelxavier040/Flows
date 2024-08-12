@@ -83,6 +83,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
     print("Starting training the flows")
     losses = []
+    lambda_max_likelihood = -math.inf
 
     T0 = 5.0
     Tn = 0.01
@@ -129,6 +130,9 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
                 View.plot_flow_lasso_path_vs_ground_truth(X, Y, lambdas_sorted,
                                                           q_samples_sorted, likelihood_sigma ** 2, solution_type)
 
+                log_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+
                 title = "Lasso-Regression-CNF"
                 View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
                                                             title)
@@ -137,7 +141,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
     except KeyboardInterrupt:
         print("interrupted..")
 
-    return flows, losses
+    return flows, losses, lambda_max_likelihood
 
 
 def generate_synthetic_data(d, l, n, noise):
@@ -253,6 +257,17 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
     return lambdas_sorted, q_samples_sorted, losses_sorted
 
 
+def select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows):
+    lambda_max_likelihood_exp = np.log10(lambda_max_likelihood)
+    uniform_lambdas = torch.zeros(1).to(device)
+    lambdas_exp = (uniform_lambdas * 0 + lambda_max_likelihood_exp).view(-1, 1)
+    context = lambdas_exp
+    q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=100, context=context)
+    q_selected = q_samples.mean(dim=1)
+    print("Coefficient selected from Flows : ", q_selected)
+    return q_selected
+
+
 def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
               context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
     dimension = X_torch[0].shape[0]
@@ -264,12 +279,15 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
 
-    flows, losses = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
+    flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
                               likelihood_sigma, epochs,
                               q_sample_size,
                               context_size, lambda_min_exp, lambda_max_exp,
                               learning_rate
                               )
+
+    q_selected = select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows)
+
     # View.plot_loss(losses)
     solution_type = "MAP solution path"
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
@@ -277,13 +295,13 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
                                                                           lambda_min_exp, lambda_max_exp)
     View.plot_flow_lasso_path_vs_ground_truth(X, Y,
                                               lambdas_sorted, q_samples_sorted, likelihood_sigma ** 2, solution_type)
-    solution_type="MAP"
+    solution_type = "MAP"
     View.plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y,
                                                                         lambdas_sorted, q_samples_sorted, solution_type)
 
 
 def main():
-    epochs = 200
+    epochs = 1000
     dimension, last_zero_indices = 5, 20
     data_sample_size = 7
     data_noise_sigma = 2.0
@@ -301,7 +319,8 @@ def main():
     # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, data_noise_sigma)
 
     X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    X /= X.std(0)
+    # X /= X.std(0)
+    X = (X - X.mean(0)) / X.std(0)
 
     X_torch = X.to(device)
     Y_torch = Y.to(device)

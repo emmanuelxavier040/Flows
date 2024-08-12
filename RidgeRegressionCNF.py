@@ -104,7 +104,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
     file_name = f'CNF_d{d}_n{n}_e{epochs}_lmin{lambda_min_exp}_lmax{lambda_max_exp}'
 
     optimizer = optim.Adam(flows.parameters(), lr=lr, eps=1e-8)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
     losses = []
 
@@ -143,9 +143,9 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
             torch.nn.utils.clip_grad_norm_(flows.parameters(), 1)
             optimizer.step()
 
-            if epoch > 0 and epoch % (epochs // 50) == 0:
-                print("Learning Rate: ", scheduler.get_last_lr())
-                scheduler.step()
+            # if epoch > 0 and epoch % (epochs // 200) == 0:
+            #     print("Learning Rate: ", scheduler.get_last_lr())
+            #     scheduler.step()
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
@@ -216,23 +216,17 @@ def generate_synthetic_data(d, l, n, noise):
 def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     assert n_features >= n_non_zero
 
-    # Generate non-zero coefficients randomly
     non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
     coefficients = np.zeros(n_features)
-    coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)  # Random non-zero coefficients
+    coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)
 
-    # Generate data matrix X from a Gaussian distribution with covariance matrix sampled from a Wishart distribution
-    scale_matrix = np.eye(n_features)  # Identity matrix as the scale matrix
+    scale_matrix = np.eye(n_features)
     covariance = sp.stats.wishart(df=n_features, scale=scale_matrix).rvs(1)
 
-    # Sample data matrix X from a multivariate Gaussian distribution with zero mean and covariance matrix
     X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
-
-    # Generate response variable y
     y = np.dot(X, coefficients) + np.random.normal(0, noise_std ** 2,
-                                                   n_samples)  # Linear regression model with Gaussian noise
+                                                   n_samples)
 
-    # compute regression parameters
     reg = LinearRegression().fit(X, y)
     r2_score = reg.score(X, y)
     print(f"R^2 score: {r2_score:.4f}")
@@ -429,7 +423,7 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
 
 def main():
     # Set the parameters
-    epochs = 10000
+    epochs = 1000
     dimension, last_zero_indices = 5, 20
     data_sample_size = 7
     data_noise_sigma = 2.0
@@ -446,8 +440,17 @@ def main():
 
     # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
 
-    X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    X /= X.std(0)
+    X_full, Y_full, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
+    X_full /= X_full.std(0)
+
+    train_ratio = 0.8
+    num_train = int(train_ratio * data_sample_size)
+    num_test = data_sample_size - num_train
+    indices = torch.randperm(data_sample_size)
+    train_indices = indices[:num_train]
+    test_indices = indices[num_test:]
+    X, Y = X_full[train_indices], Y_full[train_indices]
+    X_test, Y_test = X_full[test_indices], Y_full[test_indices]
 
     X_torch = X.to(device)
     Y_torch = Y.to(device)

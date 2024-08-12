@@ -12,6 +12,7 @@ from sklearn.linear_model import LinearRegression
 from torch import optim
 
 import GroupLassoRegressionCNF_withoutBetas
+import LassoRegressionCNF
 import Visualizations as View
 
 import rpy2.robjects as robjects
@@ -58,17 +59,40 @@ def vectorized_log_prior_unnormalized(Ws, d, grouped_indices_list, lambdas_exp, 
     return log_prior
 
 
+def sum_of_norms_M_laplace_of_W_groups(Ws, indices_list):
+    sum_tensor = torch.zeros(Ws.shape[: -1]).to(device)
+    for indices in indices_list:
+        sum_tensor = sum_tensor + (len(indices) ** 0.5) * torch.norm(Ws[:, :, indices], p=2, dim=-1)
+    return sum_tensor
+
+
+def vectorized_log_prior_M_laplace_unnormalized(Ws, d, grouped_indices_list, lambdas_exp, std_dev):
+    lambdas_list = (10 ** lambdas_exp)
+    sum_tensor = sum_of_norms_M_laplace_of_W_groups(Ws, grouped_indices_list)
+    term_1 = 0.5 * d * torch.log(lambdas_list)
+
+    group_lengths = torch.tensor([len(group) for group in grouped_indices_list], dtype=torch.float32)
+    term_2 = torch.sum((group_lengths / 2) * torch.log(group_lengths))
+
+    term_3 = -(lambdas_list ** 0.5) * sum_tensor
+
+    term_4 = 0.5 * torch.log(torch.tensor(torch.pi) * 0.5)
+
+    log_prior = term_1 + term_2 + term_3 + term_4
+    return log_prior
+
+
 def vectorized_log_posterior_unnormalized(q_samples, d, grouped_indices_list, X, Y, lambdas_exp, likelihood_sigma):
     # proportional to p(Samples|q) * p(q)
     log_likelihood = vectorized_log_likelihood_unnormalized(q_samples, X, Y, likelihood_sigma)
-    log_prior = vectorized_log_prior_unnormalized(q_samples, d, grouped_indices_list, lambdas_exp, likelihood_sigma)
+    log_prior = vectorized_log_prior_M_laplace_unnormalized(q_samples, d, grouped_indices_list, lambdas_exp,
+                                                            likelihood_sigma)
     log_posterior = log_likelihood + log_prior
     return log_posterior
 
 
 def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, context_size=100,
               lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
-
     optimizer = optim.Adam(flows.parameters(), lr=lr, eps=1e-8)
 
     print("Starting training the flows")
@@ -121,6 +145,10 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
 
                 View.plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list,
                                                                 lambdas_sorted, q_samples_sorted, solution_type)
+
+                log_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+
                 title = "Group-Lasso-Regression-CNF"
                 View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
                                                             title, grouped_indices_list)
@@ -128,7 +156,7 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
     except KeyboardInterrupt:
         print("interrupted..")
 
-    return flows, losses
+    return flows, losses, lambda_max_likelihood
 
 
 def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n, noise):
@@ -291,6 +319,17 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, grouped_indices_list, con
     return lambdas_sorted, q_samples_sorted, losses_sorted
 
 
+def select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows):
+    lambda_max_likelihood_exp = np.log10(lambda_max_likelihood)
+    uniform_lambdas = torch.zeros(1).to(device)
+    lambdas_exp = (uniform_lambdas * 0 + lambda_max_likelihood_exp).view(-1, 1)
+    context = lambdas_exp
+    q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=100, context=context)
+    q_selected = q_samples.mean(dim=1)
+    print("Coefficient selected from Flows : ", q_selected)
+    return q_selected
+
+
 def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs, q_sample_size,
               context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
     dimension = X_torch[0].shape[0]
@@ -303,12 +342,15 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, ep
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
 
-    flows, losses = train_CNF(flows, dimension, grouped_indices_list, X, Y, X_torch, Y_torch,
-                              likelihood_sigma, epochs,
-                              q_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate
-                              )
+    flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, grouped_indices_list, X, Y, X_torch, Y_torch,
+                                                     likelihood_sigma, epochs,
+                                                     q_sample_size,
+                                                     context_size, lambda_min_exp, lambda_max_exp,
+                                                     learning_rate
+                                                     )
+
+    q_selected = select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows)
+
     # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     # View.plot_loss(losses)
     # solution_type = "Group-Lasso-Solution Path"
@@ -346,15 +388,16 @@ def get_bardet_data():
 
 def main():
     # Set the parameters
-    epochs = 10000
+    epochs = 1000
     # dimension = 10
     # grouped_indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
     # zero_weight_group_index = 2
 
-    dimension = 20
+    dimension = 6
     # grouped_indices_list = [[0, 2], [1, 3, 4]]
     # grouped_indices_list = [[0, 1], [2, 3, 4], [i for i in range(5, 20)]]
-    grouped_indices_list = [list(range(i, i + 5)) for i in range(0, dimension, 5)]
+    # grouped_indices_list = [list(range(i, i + 5)) for i in range(0, dimension, 5)]
+    grouped_indices_list = [list(range(i, i + 1)) for i in range(0, dimension, 1)]
 
     zero_weight_group_index = 1
 
@@ -385,8 +428,11 @@ def main():
     posterior(X.detach().cpu().numpy(), Y.detach().cpu().numpy(), X_torch, Y_torch, likelihood_sigma,
               grouped_indices_list, epochs, q_sample_size, context_size,
               lambda_min_exp, lambda_max_exp, learning_rate, W)
-    GroupLassoRegressionCNF_withoutBetas.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, 20000, q_sample_size, context_size,
-              lambda_min_exp, lambda_max_exp, learning_rate, W)
+    # GroupLassoRegressionCNF_withoutBetas.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, 20000, q_sample_size, context_size,
+    #           lambda_min_exp, lambda_max_exp, learning_rate, W)
+
+    # LassoRegressionCNF.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size, context_size,
+    #           lambda_min_exp, lambda_max_exp, learning_rate, W)
 
     # GroupLassoRegressionCNF_withoutBetas.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list,
     #                                                epochs, q_sample_size,
