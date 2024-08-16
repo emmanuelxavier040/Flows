@@ -1,32 +1,20 @@
-"""
-This is an example of posterior estimation using flows by minimizing the KL divergence with synthetic data.
-We use a Multi-variate normal distribution to generate X. We choose a fixed parameter W which can be used for a linear
-transformation of X to Y. We can add some noise to the observations finally giving Y = XW + noise. Our task is to infer
-about the posterior P(W | X,Y). We use linear flows to compute the KL-Divergence(q(W) || P*(W | X,Y)). Here P* is the
-un-normalized posterior which is equivalent to the un-normalized Gaussian likelihood * Gaussian prior.
-We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
-learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
-"""
-import os.path
 import math
-import random
 
 import numpy as np
 import scipy as sp
 import torch
-import tqdm
 from enflows.distributions.normal import StandardNormal
 from enflows.flows.base import Flow
 from enflows.nn.nets import ResidualNet
-from enflows.transforms import MaskedSumOfSigmoidsTransform
 from enflows.transforms.base import CompositeTransform, InverseTransform
-from enflows.transforms.conditional import ConditionalShiftTransform, ConditionalScaleTransform, ConditionalLUTransform, \
-    ConditionalSumOfSigmoidsTransform
+from enflows.transforms.conditional import ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
 from sklearn.linear_model import LinearRegression
 
 from torch import optim
 
+import Evaluation
+import Utilities
 import Visualizations as View
 
 torch.manual_seed(11)
@@ -173,23 +161,16 @@ def generate_synthetic_data(d, l, n, noise):
 def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     assert n_features >= n_non_zero
 
-    # Generate non-zero coefficients randomly
     non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
     coefficients = np.zeros(n_features)
     coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)  # Random non-zero coefficients
 
-    # Generate data matrix X from a Gaussian distribution with covariance matrix sampled from a Wishart distribution
-    scale_matrix = np.eye(n_features)  # Identity matrix as the scale matrix
+    scale_matrix = np.eye(n_features)
     covariance = sp.stats.wishart(df=n_features, scale=scale_matrix).rvs(1)
 
-    # Sample data matrix X from a multivariate Gaussian distribution with zero mean and covariance matrix
     X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
+    y = np.dot(X, coefficients) + np.random.normal(0, noise_std ** 2, n_samples)
 
-    # Generate response variable y
-    y = np.dot(X, coefficients) + np.random.normal(0, noise_std ** 2,
-                                                   n_samples)  # Linear regression model with Gaussian noise
-
-    # compute regression parameters
     reg = LinearRegression().fit(X, y)
     r2_score = reg.score(X, y)
     print(f"R^2 score: {r2_score:.4f}")
@@ -198,7 +179,6 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
 
     return torch.from_numpy(X).float(), torch.from_numpy(y).float(), torch.from_numpy(coefficients).float()
-    # return X, y, coefficients
 
 
 def build_sum_of_sigmoid_conditional_flow_model(d):
@@ -257,17 +237,6 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
     return lambdas_sorted, q_samples_sorted, losses_sorted
 
 
-def select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows):
-    lambda_max_likelihood_exp = np.log10(lambda_max_likelihood)
-    uniform_lambdas = torch.zeros(1).to(device)
-    lambdas_exp = (uniform_lambdas * 0 + lambda_max_likelihood_exp).view(-1, 1)
-    context = lambdas_exp
-    q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=100, context=context)
-    q_selected = q_samples.mean(dim=1)
-    print("Coefficient selected from Flows : ", q_selected)
-    return q_selected
-
-
 def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
               context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
     dimension = X_torch[0].shape[0]
@@ -280,14 +249,11 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
     flows.to(device)
 
     flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
-                              likelihood_sigma, epochs,
-                              q_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate
-                              )
-
-    q_selected = select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows)
-
+                                                     likelihood_sigma, epochs,
+                                                     q_sample_size,
+                                                     context_size, lambda_min_exp, lambda_max_exp,
+                                                     learning_rate
+                                                     )
     # View.plot_loss(losses)
     solution_type = "MAP solution path"
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
@@ -298,19 +264,23 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
     solution_type = "MAP"
     View.plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y,
                                                                         lambdas_sorted, q_samples_sorted, solution_type)
+    return flows, lambda_max_likelihood
 
 
 def main():
     epochs = 1000
     dimension, last_zero_indices = 5, 20
-    data_sample_size = 7
-    data_noise_sigma = 2.0
+    data_sample_size = 200
+    data_noise_sigma = 1.0
     likelihood_sigma = 2
     q_sample_size = 1
     context_size = 1000
     lambda_min_exp = -3
-    lambda_max_exp = 2
+    lambda_max_exp = 3
     learning_rate = 1e-3
+
+    # lambda_min_exp = -4
+    # lambda_max_exp = 5
 
     print(f"============= Parameters ============= \n"
           f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
@@ -319,14 +289,23 @@ def main():
     # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, data_noise_sigma)
 
     X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    # X /= X.std(0)
     X = (X - X.mean(0)) / X.std(0)
 
-    X_torch = X.to(device)
-    Y_torch = Y.to(device)
+    train_ratio = 0.8
+    X_train, Y_train, X_test, Y_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Y)
 
-    posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size, context_size,
-              lambda_min_exp, lambda_max_exp, learning_rate, W)
+    X_torch = X_train.to(device)
+    Y_torch = Y_train.to(device)
+    X_test, Y_test = X_test.to(device), Y_test.to(device)
+
+    flows, lambda_max_likelihood = posterior(X_train, Y_train, X_torch, Y_torch, likelihood_sigma, epochs,
+                                             q_sample_size, context_size, lambda_min_exp, lambda_max_exp,
+                                             learning_rate, W)
+
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+
+    Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Lasso-Regression-CNf-Training-data")
+    Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Lasso-Regression-CNf-Test-data")
 
 
 if __name__ == "__main__":

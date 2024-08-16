@@ -18,12 +18,12 @@ device = "cuda:0" if torch.cuda.is_available() else 'cpu'
 print("Device used : ", device)
 
 
-def vectorized_log_likelihood_unnormalized(Ws, X, Y, variance):
+def vectorized_log_likelihood_unnormalized(Ws, X, Y, likelihood_sigma):
     Ws_reshaped = Ws.unsqueeze(-1)
     XWs = torch.matmul(X, Ws_reshaped)
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
-    log_likelihood = -0.5 * (1 / variance) * torch.sum(squared_errors, dim=1)
+    log_likelihood = -0.5 * (1 / likelihood_sigma**2 ) * torch.sum(squared_errors, dim=1)
     return log_likelihood
 
 
@@ -51,22 +51,22 @@ def sum_of_norms_of_W_groups(Ws, indices_list):
     return sum_tensor
 
 
-def vectorized_log_prior_unnormalized(Ws, d, lambdas_list, variance):
+def vectorized_log_prior_unnormalized(Ws, d, indices_list, lambdas_list, likelihood_sigma):
     sum_tensor = sum_of_norms_of_W_groups(Ws, indices_list)
-    std_dev = torch.sqrt(variance)
+    std_dev = likelihood_sigma
     log_prior = -(lambdas_list/std_dev)*sum_tensor
     return log_prior
 
 
-def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_list, variance):
+def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, indices_list, lambdas_list, likelihood_sigma):
     # proportional to p(Samples|q) * p(q)
-    log_likelihood = vectorized_log_likelihood_unnormalized(q_samples, X, Y, variance)
-    log_prior = vectorized_log_prior_unnormalized(q_samples, d, lambdas_list, variance)
+    log_likelihood = vectorized_log_likelihood_unnormalized(q_samples, X, Y, likelihood_sigma)
+    log_prior = vectorized_log_prior_unnormalized(q_samples, d, indices_list, lambdas_list, likelihood_sigma)
     log_posterior = log_likelihood + log_prior
     return log_posterior
 
 
-def train(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
+def train(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda = 1.0):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows")
     losses = []
@@ -74,7 +74,7 @@ def train(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
         optimizer.zero_grad()
         q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
         lambdas_list = torch.ones(q_sample_size) * lamda
-        log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, lambdas_list, variance)
+        log_p = vectorized_log_posterior_unnormalized(q_samples, d, X, Y, indices_list, lambdas_list, likelihood_sigma)
         loss = torch.mean(q_log_prob - log_p)
         if (i + 1) % 100 == 0:
             print("Loss after iteration {}: ".format(i), loss.tolist())
@@ -84,7 +84,7 @@ def train(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
     return flows, losses
 
 
-def train_2(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
+def train_2(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda = 1.0):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows")
     losses = []
@@ -93,7 +93,7 @@ def train_2(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
         q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
         lambdas_list = torch.ones(q_sample_size) * lamda
         log_likelihood = vectorized_log_likelihood_t_distribution_unnormalized(q_samples, d, X, Y)
-        log_prior = vectorized_log_prior_unnormalized(q_samples, d, lambdas_list, variance)
+        log_prior = vectorized_log_prior_unnormalized(q_samples, d, indices_list, lambdas_list, likelihood_sigma)
         log_p = log_likelihood + log_prior
         loss = torch.mean(q_log_prob - log_p)
         if (i + 1) % 100 == 0:
@@ -104,7 +104,7 @@ def train_2(flows, d, X, Y, variance, num_iter, q_sample_size, lamda = 1):
     return flows, losses
 
 
-def generate_synthetic_data(d, n, l, noise):
+def generate_synthetic_data(d, n, indices_list, l, noise):
     # Define a Multivariate-Normal distribution and generate some real world samples X
     print("Generating real-world samples : Sample_size:{} Dimensions:{}".format(n, d))
     data_mean = torch.randn(d)
@@ -113,12 +113,14 @@ def generate_synthetic_data(d, n, l, noise):
     num_data_samples = torch.Size([n])
     X = data_mvn_dist.sample(num_data_samples)
     W = torch.rand(d)
-    W[-l:] = 0
+
+    # W[-l:] = 0
+    W[indices_list[l]] = 0
     # W = torch.tensor([50.2, 30.7, 29.4, 4.3, 4.3])
     v = torch.tensor(noise)
     delta = torch.randn(num_data_samples) * v
     Y = torch.matmul(X, W) + delta
-    return X, Y, W, v
+    return X, Y, W
 
 
 def build_flow_model(d):
@@ -138,38 +140,40 @@ def build_flow_model(d):
 
 
 def main():
+    num_iter = 10000
+    q_sample_size = 100
     lamda = 0.5
     dimension = 10
+    likelihood_sigma = 1.0
     # indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9], [i for i in range(10, 49)]]
     indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
     data_sample_size = 50
-    last_zero_indices = 5
+    zero_weight_group_index = 2
     noise = 0.05
     print(f"============= Parameters ======== \n"
-          f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
+          f"lambda:{lamda}, dimension:{dimension}, last_zero_indices:{zero_weight_group_index}, "
           f"num_samples:{data_sample_size}, noise:{noise}\n")
 
-    X, Y, W, variance = generate_synthetic_data(dimension, data_sample_size, last_zero_indices, noise)
+    X, Y, W = generate_synthetic_data(dimension, data_sample_size, indices_list, zero_weight_group_index, noise)
 
     flows = build_flow_model(dimension)
 
-    num_iter = 1000
-    q_sample_size = 100
-    flows, losses = train(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
+    flows, losses = train(flows, dimension, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda)
     # View.plot_loss(losses)
     # q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
     # lambdas_list = torch.ones(q_sample_size)
     # log_p = vectorized_log_posterior_unnormalized(q_samples, dimension, X, Y, lambdas_list, variance)
     q_samples = flows.sample(100)
-    sample_mean_1 = torch.mean(q_samples, dim=0).tolist()
+    sample_mean, sample_std = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples, dim=0).tolist()
     fixed = W.tolist()
 
-    flows, losses = train_2(flows, dimension, X, Y, variance, num_iter, q_sample_size, lamda)
+    flows, losses = train_2(flows, dimension, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda)
     q_samples = flows.sample(100)
-    sample_mean = torch.mean(q_samples, dim=0).tolist()
+    sample_mean_t_likelihood, sample_std_t_likelihood = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples, dim=0).tolist()
 
     for i in range(dimension):
-        print(f"Index {i}: {fixed[i]} - {sample_mean_1[i]} - {sample_mean[i]}")
+        print(f"Index {i}: {round(fixed[i], 4)} :: {round(sample_mean[i], 4)}+/-{round(sample_std[i], 4)} "
+              f":: {round(sample_mean_t_likelihood[i], 4)}+/-{round(sample_std_t_likelihood[i], 4)}")
 
 
 if __name__ == "__main__":

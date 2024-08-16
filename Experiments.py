@@ -2,7 +2,9 @@ import General
 import General_with_InverseGamma
 import General_with_hyper_priors
 import GroupLassoRegression
+import GroupLassoRegressionCNF
 import LassoRegression
+import LassoRegressionCNF
 import RidgeRegressionCNF
 import RidgeRegression_Inverse_Gamma_CNF
 
@@ -42,4 +44,15 @@ def Experiment_7():
     print("CNF, Ridge, inverse gamma parameters vs Posterior Ridge CNF Inverse Gamma")
     RidgeRegression_Inverse_Gamma_CNF.main()
 
+
+def Experiment_8():
+    print("CNF, Lasso, simulated annealing, posterior, marginal likelihood at T=1, MAP, standardized coefficient ("
+          "LassoCNF)")
+    LassoRegressionCNF.main()
+
+
+def Experiment_9():
+    print("CNF, GroupLasso, simulated annealing, posterior, marginal likelihood at T=1, MAP, standardized coefficient ("
+          "GroupLassoCNF)")
+    GroupLassoRegressionCNF.main()
 

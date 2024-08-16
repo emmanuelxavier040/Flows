@@ -1,12 +1,11 @@
 import seaborn as sns
 import pandas as pd
+import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import axes3d
-from scipy.interpolate import griddata
 
-import numpy as np
 import scipy.sparse
 from scipy.interpolate import griddata
 from scipy.stats import multivariate_normal, multivariate_t
@@ -16,9 +15,6 @@ from itertools import cycle, islice
 sns.set_theme(style="darkgrid")
 
 import rpy2.robjects as robjects
-import pandas as pd
-import numpy as np
-import torch
 from rpy2.robjects import pandas2ri
 
 pandas2ri.activate()
@@ -325,30 +321,21 @@ def convert_group_indices_for_gglasso(grouped_indices_list):
     return np.array(group)
 
 
-def plot_poisson_data():
-
-    np.random.seed(42)
-    n_samples = 100
-    X = np.random.normal(size=(n_samples, 2))
-    beta = np.array([0.5, 1.5])
-    Z = np.exp(X @ beta)
-    Y = np.random.poisson(lam=Z)
-
-    glm(X, Y, X)
-
-    # plt.figure(figsize=(10, 6))
-    # plt.scatter(X[:,1], Y, label='Observed Poisson Data', alpha=0.6)
-    # plt.plot(X[:,1], Z, color='red', label='True Mean (Z)', linestyle='--')
-    # plt.xlabel('Predictor X')
-    # plt.ylabel('Response Y / Mean Z')
-    # plt.legend()
-    # plt.title('Poisson Data with Predictor X')
-    # plt.show()
-    return
-
-# plot_poisson_data()
-
 # ============================= Solution Paths plots =============================
+
+def execute_glmnet(X, Y, lambda_sorted, alpha, family="gaussian"):
+    W_glmnet = glmnet(X, Y, lambdas=lambda_sorted, alpha=alpha, family=family)
+    alphas = lambda_sorted
+
+    r_matrix = W_glmnet[1]
+    data = robjects.conversion.rpy2py(r_matrix.slots['x'])
+    indices = robjects.conversion.rpy2py(r_matrix.slots['i'])
+    indptr = robjects.conversion.rpy2py(r_matrix.slots['p'])
+    shape = tuple(robjects.conversion.rpy2py(r_matrix.slots['Dim']))
+    sparse_matrix = scipy.sparse.csc_matrix((data, indices, indptr), shape=shape)
+    coefs = sparse_matrix.toarray()[:, ::-1]
+
+    return alphas, coefs
 
 
 def plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, variance=1, solution_type="Solution Path"):
@@ -356,8 +343,10 @@ def plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 
     x_flow = lambda_sorted
     y_flow = q_samples_sorted
 
-    alphas_ridge, coefs_ridge, _ = enet_path(X, Y, alphas=lambda_sorted, l1_ratio=0)
-    alphas_ridge = alphas_ridge * n / variance
+    # alphas_ridge, coefs_ridge, _ = enet_path(X, Y, alphas=lambda_sorted, l1_ratio=0)
+    alphas_ridge, coefs_ridge = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=0)
+
+    alphas_ridge = alphas_ridge * n / (variance * 4)
     x_enet_path = alphas_ridge
     y_enet_path = coefs_ridge
 
@@ -372,16 +361,7 @@ def plot_flow_lasso_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 
     y_flow = q_samples_sorted
 
     # alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
-    W_glmnet = glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambdas=lambda_sorted, alpha=1)
-    alphas_lasso = lambda_sorted
-
-    r_matrix = W_glmnet[1]
-    data = robjects.conversion.rpy2py(r_matrix.slots['x'])
-    indices = robjects.conversion.rpy2py(r_matrix.slots['i'])
-    indptr = robjects.conversion.rpy2py(r_matrix.slots['p'])
-    shape = tuple(robjects.conversion.rpy2py(r_matrix.slots['Dim']))
-    sparse_matrix = scipy.sparse.csc_matrix((data, indices, indptr), shape=shape)
-    coefs_lasso = sparse_matrix.toarray()[:, ::-1]
+    alphas_lasso, coefs_lasso = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=1)
 
     alphas_lasso = alphas_lasso * n / variance
     x_lasso_path = alphas_lasso
@@ -392,14 +372,14 @@ def plot_flow_lasso_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 
     plot_flow_path_vs_ground_truth(x_lasso_path, y_lasso_path, x_flow, y_flow, plot_title, beta_group_map={}, group_lasso=False)
 
 
-def plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list, lambda_sorted, q_samples_sorted, solution_type):
-
+def plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list, likelihood_sigma, lambda_sorted, q_samples_sorted, solution_type):
+    n = Y.shape[0]
     lambda_flow = lambda_sorted
     coeff_flow = q_samples_sorted
 
     group = convert_group_indices_for_gglasso(grouped_indices_list)
     W_glasso = glasso_path(X, Y, group, np.array(lambda_sorted))
-    lambda_glasso = np.array(W_glasso[4])
+    lambda_glasso = np.array(W_glasso[4]) * (2 * n) / (likelihood_sigma**2)
     coeff_glasso = np.array(W_glasso[1])
 
     beta_group_map = {}
@@ -409,24 +389,16 @@ def plot_flow_group_lasso_path_vs_ground_truth(X, Y, grouped_indices_list, lambd
 
     plot_title = 'Group Lasso Regression with CNF - ' + solution_type
 
-    plot_flow_path_vs_ground_truth(lambda_glasso, coeff_glasso, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso=True)
+    plot_flow_path_vs_ground_truth(lambda_glasso, coeff_glasso, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso=True, show_legend=False)
 
 
-def plot_flow_poisson_regression_path_vs_ground_truth(X, Z, lambdas_sorted, q_samples_sorted, solution_type, is_ridge_posterior=True):
+def plot_flow_poisson_regression_path_vs_ground_truth(X, Z, lambdas_sorted, q_samples_sorted, likelihood_sigma, solution_type, is_ridge_posterior=True):
+    n = Z.shape[0]
     x_flow = lambdas_sorted
     y_flow = q_samples_sorted
 
-    W_glmnet = glmnet(X, Z, lambdas=lambdas_sorted, alpha=0 if is_ridge_posterior else 1, family="poisson")
-    alphas_ridge = lambdas_sorted * X.shape[0]
-
-    r_matrix = W_glmnet[1]
-    data = robjects.conversion.rpy2py(r_matrix.slots['x'])
-    indices = robjects.conversion.rpy2py(r_matrix.slots['i'])
-    indptr = robjects.conversion.rpy2py(r_matrix.slots['p'])
-    shape = tuple(robjects.conversion.rpy2py(r_matrix.slots['Dim']))
-    sparse_matrix = scipy.sparse.csc_matrix((data, indices, indptr), shape=shape)
-    coefs_ridge = sparse_matrix.toarray()[:, ::-1]
-    coefs_ridge = coefs_ridge
+    alphas_ridge, coefs_ridge = execute_glmnet(X, Z, lambdas_sorted, alpha=0 if is_ridge_posterior else 1, family="poisson")
+    alphas_ridge = alphas_ridge * n / (likelihood_sigma*likelihood_sigma)
 
     plot_title = 'Poisson Ridge Lasso Regression with CNF - ' + solution_type
 
@@ -453,7 +425,7 @@ def plot_flow_group_poisson_path_vs_ground_truth(X, Y, grouped_indices_list, lam
     plot_flow_path_vs_ground_truth(lambda_glasso, coeff_glasso, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso=True)
 
 
-def plot_flow_path_vs_ground_truth(lambda_gt, coeff_gt, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso):
+def plot_flow_path_vs_ground_truth(lambda_gt, coeff_gt, lambda_flow, coeff_flow, plot_title, beta_group_map, group_lasso, show_legend=True):
     dimension = coeff_flow.shape[-1]
 
     p95 = np.quantile(coeff_flow, 0.95, axis=1)
@@ -486,7 +458,8 @@ def plot_flow_path_vs_ground_truth(lambda_gt, coeff_gt, lambda_flow, coeff_flow,
     plt.xscale('log')
     plt.ylabel('Coefficients')
     plt.title(plot_title)
-    plt.legend()
+    if show_legend:
+        plt.legend()
     plt.savefig("./figures/GT_vs_flow_path_" + plot_title.lower().replace(" ", "_") + ".pdf", dpi=300)
     plt.show()
 
@@ -496,15 +469,17 @@ def plot_flow_path_vs_ground_truth(lambda_gt, coeff_gt, lambda_flow, coeff_flow,
 
 def plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted, solution_type):
     plot_title = "Ridge with CNF - Standardized Coefficients - " + solution_type
-    alphas_lasso, coefs_lasso, _ = enet_path(X, Y, alphas=lambda_sorted, l1_ratio=0)
-    ridge_coeff_estimate = coefs_lasso.T
+    # alphas_ridge, coefs_ridge, _ = enet_path(X, Y, alphas=lambda_sorted, l1_ratio=0)
+    alphas_ridge, coefs_ridge = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=0)
+    ridge_coeff_estimate = coefs_ridge.T
     plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, ridge_coeff_estimate, plot_title,
                                                              beta_group_map={}, group_lasso=False)
 
 
 def plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted, solution_type):
     plot_title = "Lasso with CNF - Standardized Coefficients - " + solution_type
-    alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
+    # alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
+    alphas_ridge, coefs_lasso = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=1)
     lasso_coeff_estimate = coefs_lasso.T
     plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, lasso_coeff_estimate, plot_title,
                                                              beta_group_map={}, group_lasso=False)
@@ -575,7 +550,7 @@ def convert_q_to_group_norms(q_samples_sorted, grouped_indices_list):
     return norm_array
 
 
-def plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambda_sorted, q_samples_sorted):
+def plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambda_sorted, q_samples_sorted, show_legend=True):
     dimension = len(grouped_indices_list)
     norm_flow = convert_q_to_group_norms(q_samples_sorted, grouped_indices_list)
     flow_norm_estimate = np.median(norm_flow, axis=1)
@@ -593,7 +568,7 @@ def plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambda_sorted, q_samp
         'solid',
         (0, (1, 1)),
         'dashed',
-        (0, (1, 10))]
+        (5, (10, 3))]
     my_linestyles = list(islice(cycle(my_linestyles), dimension))
 
     plt.figure(figsize=(10, 5))
@@ -644,6 +619,7 @@ def plot_flow_group_coefficients_path_vs_ground_truth(X, Y, lambda_sorted, tau_s
 
 
 def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, variance, title="Distribution", grouped_indices_list=None, group_lasso=False):
+    print("Computing and plotting log-marginal likelihood")
     if grouped_indices_list is None:
         group = []
     else:
@@ -657,12 +633,16 @@ def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, v
     lambda_max_likelihood = lambda_sorted[np.argmax(means)]
     label_lambda_cv = ""
 
+    best_lambda_cv = ""
+    q_selected_cv = ""
+
     if "ridge" in title.lower():
         alphas = lambda_sorted
-        alpha_ridge_cv = RidgeCV(alphas=alphas, cv=5, fit_intercept=False).fit(X, Y).alpha_
-        print("Ridge CV lambda: ", alpha_ridge_cv)
+        reg = RidgeCV(alphas=alphas, cv=5, fit_intercept=False).fit(X, Y)
+        alpha_ridge_cv = reg.alpha_
+        q_selected_cv = reg.coef_
         best_lambda_cv = 10 ** alpha_ridge_cv
-        print("Ridge CV lambda rescaled: ", best_lambda_cv)
+        print("Ridge CV lambda : ", best_lambda_cv)
         label_lambda_cv = '$\lambda* RidgeCV$'
     elif "gl-without_betas" in title.lower():
         print()
@@ -772,3 +752,112 @@ def plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, sc
         b_0[0]) + ".pdf")
     plt.show()
     return
+
+
+def plot_residuals(Y_actual, Y_pred, title):
+    residuals = Y_actual - Y_pred
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    ax1.scatter(Y_pred, Y_actual, alpha=0.7)
+    ax1.plot([min(Y_actual), max(Y_actual)], [min(Y_actual), max(Y_actual)], color='blue', linestyle='--')
+    ax1.set_title(title)
+    ax1.set_xlabel('Predicted Values')
+    ax1.set_ylabel('Actual Values')
+
+    ax2.scatter(Y_pred, residuals)
+    ax2.axhline(0, color='red', linestyle='--')
+    ax2.set_title(title)
+    ax2.set_xlabel('Predicted Values')
+    ax2.set_ylabel('Residuals')
+    plt.savefig("./figures/Residual-Plot-" + title + ".pdf")
+    plt.show()
+
+
+# def plot_parameter_space_3d():
+#     import matplotlib.pyplot as plt
+#     import numpy as np
+#
+#     from matplotlib import cm
+#     from mpl_toolkits.mplot3d.axes3d import get_test_data
+#
+#     # set up a figure twice as wide as it is tall
+#     fig = plt.figure(figsize=plt.figaspect(0.5))
+#
+#     # =============
+#     # First subplot
+#     # =============
+#     # set up the Axes for the first plot
+#     ax = fig.add_subplot(1, 2, 1, projection='3d')
+#
+#     # plot a 3D surface like in the example mplot3d/surface3d_demo
+#     X = np.arange(-5, 5, 0.25)
+#     Y = np.arange(-5, 5, 0.25)
+#     X, Y = np.meshgrid(X, Y)
+#     R = np.sqrt(X ** 2 + Y ** 2)
+#     Z = np.sin(R)
+#     surf = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap=cm.coolwarm,
+#                            linewidth=0, antialiased=False)
+#     ax.set_zlim(-1.01, 1.01)
+#     fig.colorbar(surf, shrink=0.5, aspect=10)
+#
+#     # ==============
+#     # Second subplot
+#     # ==============
+#     # set up the Axes for the second plot
+#     ax = fig.add_subplot(1, 2, 2, projection='3d')
+#
+#     # plot a 3D wireframe like in the example mplot3d/wire3d_demo
+#     X, Y, Z = get_test_data(0.05)
+#     ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10)
+#
+#     plt.show()
+#
+#     import numpy as np
+#     import matplotlib.pyplot as plt
+#     from mpl_toolkits.mplot3d import Axes3D
+#     from matplotlib import cm
+#     from scipy.interpolate import griddata
+#
+#     # Example: Tensor of multiple 3D points
+#     # Assume this is your data (n x 3) tensor
+#     tensor_3d = np.array([
+#         [1.0, 2.0, 3.0],
+#         [2.0, 3.0, 4.0],
+#         [3.0, 4.0, 1.5],
+#         [4.0, 5.0, 3.5],
+#         [5.0, 6.0, 5.0],
+#         [6.0, 7.0, 4.0],
+#         [7.0, 8.0, 2.0]
+#     ])
+#
+#     # Ensure that x, y, and z are floats
+#     x = np.asarray(tensor_3d[:, 0], dtype=float)
+#     y = np.asarray(tensor_3d[:, 1], dtype=float)
+#     z = np.asarray(tensor_3d[:, 2], dtype=float)
+#
+#     # Create a regular grid covering the domain of the data
+#     grid_x, grid_y = np.meshgrid(np.linspace(min(x), max(x), 100), np.linspace(min(y), max(y), 100))
+#
+#     # Interpolate the z values onto the grid
+#     grid_z = griddata((x, y), z, (grid_x, grid_y), method='cubic')
+#
+#     # Create a new 3D plot
+#     fig = plt.figure()
+#     ax = fig.add_subplot(111, projection='3d')
+#
+#     # Plot the surface using the interpolated grid
+#     surf = ax.plot_surface(grid_x, grid_y, grid_z, rstride=1, cstride=1, cmap=cm.coolwarm, linewidth=0,
+#                            antialiased=False)
+#
+#     # Set the Z-axis limits based on your data
+#     ax.set_zlim(np.nanmin(grid_z), np.nanmax(grid_z))
+#
+#     # Add a color bar for the surface plot
+#     fig.colorbar(surf, shrink=0.5, aspect=10)
+#
+#     # Show the plot
+#     plt.show()
+#
+#     return
+# plot_parameter_space_3d()

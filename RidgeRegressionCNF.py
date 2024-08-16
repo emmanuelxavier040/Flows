@@ -7,6 +7,7 @@ un-normalized posterior which is equivalent to the un-normalized Gaussian likeli
 We can compute P* since I have X, Y and W (for W, we can easily sample from flow). After training, flows should have
 learned the distribution of W and samples from it should resemble the fixed W which we used to transform X to Y.
 """
+import math
 import os.path
 
 import numpy as np
@@ -24,6 +25,8 @@ from sklearn.linear_model import LinearRegression
 
 from torch import optim
 
+import Evaluation
+import Utilities
 import Visualizations as View
 
 torch.manual_seed(11)
@@ -107,6 +110,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
     losses = []
+    lambda_max_likelihood = -math.inf
 
     T0 = 5.0
     Tn = 0.01
@@ -153,13 +157,12 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
                 lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
                 View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
 
-                # log_marg_likelihood = compute_analytical_log_marginal_likelihood(X, Y, torch.zeros(d), torch.eye(d))
-                # print("Analytical Log_marginal_likelihood : ", log_marg_likelihood)
-                # print("Learned Log_marginal_likelihood : ", loss)
-
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
                                                                                       likelihood_sigma, 200, 100,
                                                                                       lambda_min_exp, lambda_max_exp)
+                log_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+
                 title = "Ridge-Regression-with-CNF_at_T1"
                 View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
                                                             title)
@@ -169,7 +172,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
     # save_model(flows, file_name)
 
-    return flows, losses
+    return flows, losses, lambda_max_likelihood
 
 
 def load_model(dimensions, model_path):
@@ -235,7 +238,6 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
 
     return torch.from_numpy(X).float(), torch.from_numpy(y).float(), torch.from_numpy(coefficients).float()
-    # return X, y, coefficients
 
 
 def build_conditional_flow_model(d):
@@ -407,18 +409,20 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
 
-    flows, losses = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
-                              likelihood_sigma, epochs,
-                              q_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate)
+    flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
+                                                     likelihood_sigma, epochs,
+                                                     q_sample_size,
+                                                     context_size, lambda_min_exp, lambda_max_exp,
+                                                     learning_rate)
     solution_type = "MAP Solution Path with Simulated Annealing"
     print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
     View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
 
     solution_type = "MAP"
-    View.plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted, solution_type)
+    View.plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted,
+                                                                        solution_type)
+    return flows, lambda_max_likelihood
 
 
 def main():
@@ -426,7 +430,11 @@ def main():
     epochs = 1000
     dimension, last_zero_indices = 5, 20
     data_sample_size = 7
-    data_noise_sigma = 2.0
+
+    dimension, last_zero_indices = 7, 20
+    data_sample_size = 200
+
+    data_noise_sigma = 1.0
     likelihood_sigma = 2
     q_sample_size = 1
     context_size = 1000
@@ -440,23 +448,23 @@ def main():
 
     # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
 
-    X_full, Y_full, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    X_full /= X_full.std(0)
+    X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
+    X = (X - X.mean(0)) / X.std(0)
 
-    train_ratio = 0.8
-    num_train = int(train_ratio * data_sample_size)
-    num_test = data_sample_size - num_train
-    indices = torch.randperm(data_sample_size)
-    train_indices = indices[:num_train]
-    test_indices = indices[num_test:]
-    X, Y = X_full[train_indices], Y_full[train_indices]
-    X_test, Y_test = X_full[test_indices], Y_full[test_indices]
+    train_ratio = 0.2
+    X_train, Y_train, X_test, Y_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Y)
 
-    X_torch = X.to(device)
-    Y_torch = Y.to(device)
+    X_torch = X_train.to(device)
+    Y_torch = Y_train.to(device)
+    X_test, Y_test = X_test.to(device), Y_test.to(device)
 
-    posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
+    flows, lambda_max_likelihood = posterior(dimension, X_train, Y_train, X_torch, Y_torch, likelihood_sigma, epochs,
               q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
+
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+
+    Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Ridge-Regression-CNf-Training-data")
+    Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Ridge-Regression-CNf-Test-data")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import scipy as sp
 import torch
@@ -10,8 +12,9 @@ from enflows.transforms.normalization import ActNorm
 
 from torch import optim
 
+import Evaluation
+import Utilities
 import Visualizations as View
-
 
 from rpy2.robjects import pandas2ri
 
@@ -60,6 +63,7 @@ def train_CNF(flows, d, X, Z, X_torch, Z_torch, likelihood_sigma, epochs, n, con
 
     print("Starting training the flows")
     losses = []
+    lambda_max_likelihood = -math.inf
 
     T0 = 5.0
     Tn = 0.01
@@ -107,7 +111,6 @@ def train_CNF(flows, d, X, Z, X_torch, Z_torch, likelihood_sigma, epochs, n, con
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-
                 solution_type = "Ridge Solution Path" if is_ridge_posterior else "Lasso Solution Path"
 
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
@@ -115,15 +118,18 @@ def train_CNF(flows, d, X, Z, X_torch, Z_torch, likelihood_sigma, epochs, n, con
                                                                                       100,
                                                                                       lambda_min_exp, lambda_max_exp)
 
+                log_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+
                 View.plot_flow_poisson_regression_path_vs_ground_truth(X_torch.cpu().detach().numpy(),
                                                                        Z_torch.cpu().detach().numpy(),
-                                                                       lambdas_sorted, q_samples_sorted,
+                                                                       lambdas_sorted, q_samples_sorted, likelihood_sigma,
                                                                        solution_type, is_ridge_posterior)
 
     except KeyboardInterrupt:
         print("interrupted..")
 
-    return flows, losses
+    return flows, losses, lambda_max_likelihood
 
 
 def generate_synthetic_data(d, n, noise):
@@ -248,23 +254,30 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, epochs, q_sample_size,
     print("======================= Training Poisson Ridge Regression =======================")
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
-    flows, losses = train_CNF(flows, dimension, X, Z, X_torch, Z_torch,
-                              likelihood_sigma, epochs,
-                              q_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate, is_ridge_posterior=is_ridge_posterior)
+    flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Z, X_torch, Z_torch,
+                                                     likelihood_sigma, epochs,
+                                                     q_sample_size,
+                                                     context_size, lambda_min_exp, lambda_max_exp,
+                                                     learning_rate, is_ridge_posterior=is_ridge_posterior)
+
+    print("Best lamba selected from flows : ", lambda_max_likelihood)
+
     # View.plot_loss(losses)
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
-                                                                                            likelihood_sigma, 100,
-                                                                                            100,
-                                                                                            lambda_min_exp,
-                                                                                            lambda_max_exp,
-                                                                                            ridge=is_ridge_posterior)
+                                                                          likelihood_sigma, 100,
+                                                                          100,
+                                                                          lambda_min_exp,
+                                                                          lambda_max_exp,
+                                                                          ridge=is_ridge_posterior)
 
-    solution_type = "Poisson-"+title+"-Solution Path - MAP"
+    solution_type = "Poisson-" + title + "-Solution Path - MAP"
 
-    View.plot_flow_poisson_regression_path_vs_ground_truth(X_torch.cpu().detach().numpy(), Z_torch.cpu().detach().numpy(),
-                                                           lambdas_sorted, q_samples_sorted, solution_type, is_ridge_posterior)
+    View.plot_flow_poisson_regression_path_vs_ground_truth(X_torch.cpu().detach().numpy(),
+                                                           Z_torch.cpu().detach().numpy(),
+                                                           lambdas_sorted, q_samples_sorted, likelihood_sigma,
+                                                           solution_type, is_ridge_posterior)
+
+    return flows, lambda_max_likelihood
 
 
 def main():
@@ -275,7 +288,7 @@ def main():
     data_noise_sigma = 1.0
     likelihood_sigma = 1
     q_sample_size = 1
-    context_size = 1000
+    context_size = 100
     lambda_min_exp = -2
     lambda_max_exp = 6
     learning_rate = 1e-3
@@ -288,18 +301,30 @@ def main():
 
     X = (X - X.mean(0)) / X.std(0)
 
-    X_torch = X.to(device)
-    Z_torch = Z.to(device)
+    train_ratio = 0.8
+    X_train, Z_train, X_test, Z_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Z)
 
-    print("======================= Training Poisson Ridge Regression =======================")
-    posterior(X.detach().cpu().numpy(), Z.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
+
+    X_torch = X_train.to(device)
+    Z_torch = Z_train.to(device)
+    X_test, Z_test = X_test.to(device), Z_test.to(device)
+
+    print("======================= Poisson Ridge Regression =======================")
+    flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
               epochs, q_sample_size, context_size,
               lambda_min_exp, lambda_max_exp, learning_rate, W, title="Ridge")
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
 
-    print("======================= Training Poisson Lasso Regression =======================")
-    posterior(X.detach().cpu().numpy(), Z.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Ridge-Regression-CNF-Training-data")
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Ridge-Regression-CNF-Test-data")
+
+    print("=======================  Poisson Lasso Regression =======================")
+    flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
               epochs, q_sample_size, context_size,
               lambda_min_exp, lambda_max_exp, learning_rate, W, title="Lasso")
+
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Lasso-Regression-CNF-Training-data")
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Lasso-Regression-CNF-Test-data")
 
 
 if __name__ == "__main__":

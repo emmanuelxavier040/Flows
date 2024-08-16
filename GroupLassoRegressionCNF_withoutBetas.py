@@ -9,13 +9,11 @@ from enflows.transforms.conditional import ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
 from torch import optim
 
-import GroupLassoRegressionCNF
-import LassoRegressionCNF
+
 import Visualizations as View
 
 from enflows.transforms.nonlinearities import Softplus, Exp
 
-# from group_lasso import GroupLasso
 
 torch.manual_seed(11)
 np.random.seed(10)
@@ -205,6 +203,30 @@ def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n,
     return X, Y, W, v
 
 
+def generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
+                                                         data_noise_sigma):
+    X = torch.zeros((data_sample_size, dimension))
+    W = torch.zeros((1, dimension))
+
+    for group_index in range(len(grouped_indices_list)):
+        g_size = len(grouped_indices_list[group_index])
+        mean = torch.zeros(g_size)
+        cov = 0.7 * torch.ones((g_size, g_size)) + 0.3 * torch.eye(g_size)
+        mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
+        x_samples = mvn_dist.sample(torch.Size([data_sample_size]))
+        X[:, grouped_indices_list[group_index]] = x_samples
+
+        if group_index % 2 == 0:
+            W[:, grouped_indices_list[group_index]] = torch.randn(g_size)
+        else:
+            W[:, grouped_indices_list[group_index]] = torch.zeros(g_size)
+
+    v = torch.tensor(data_noise_sigma ** 2)
+    delta = torch.randn(data_sample_size) * v
+    Y = torch.matmul(X, W.unsqueeze(-1)).squeeze(-1).squeeze(0) + delta
+    return X, Y, W.squeeze(0)
+
+
 def build_sum_of_sigmoid_conditional_flow_model(d):
     context_features = 16
     print("Defining the flows")
@@ -315,10 +337,10 @@ def generate_group_indices(grouped_indices_list):
 
 def main():
     # Set the parameters
-    epochs = 10000
+    epochs = 1000
     dimension = 10
-    grouped_indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
-    # grouped_indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9], [10, 11, 12, 13, 14, 15], [i for i in range(16, 100)]]
+    group_size = 1
+    grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
     zero_weight_group_index = 2
     data_sample_size = 10
     data_noise_sigma = 2.0
@@ -333,8 +355,9 @@ def main():
           f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
-    X, Y, W, variance = generate_synthetic_data(dimension, grouped_indices_list, zero_weight_group_index, data_sample_size, data_noise_sigma)
-
+    # X, Y, W, variance = generate_synthetic_data(dimension, grouped_indices_list, zero_weight_group_index, data_sample_size, data_noise_sigma)
+    X, Y, W = generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
+                                                                   data_noise_sigma)
     # X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
     X /= X.std(0)
 
