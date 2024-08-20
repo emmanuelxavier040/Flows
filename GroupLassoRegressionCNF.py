@@ -179,25 +179,28 @@ def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n,
     # X[:, [5, 6, 7, 8, 9]] = g3_base + torch.rand(num_samples, 5) * 0.1
 
     g1_size = len(grouped_indices_list[0])
-    g1_mean = torch.normal(mean=10, std=3, size=(num_samples, g1_size))
-    X[:, grouped_indices_list[0]] = g1_mean + torch.normal(mean=0, std=0.1, size=(num_samples, g1_size))
+    # g1_mean = torch.normal(mean=10, std=3, size=(num_samples, g1_size))
+    # X[:, grouped_indices_list[0]] = g1_mean + torch.normal(mean=0, std=0.1, size=(num_samples, g1_size))
+    X[:, grouped_indices_list[0]] = torch.normal(mean=0, std=1, size=(num_samples, g1_size))
 
     g2_size = len(grouped_indices_list[1])
     # g2_base = torch.distributions.Exponential(1).sample((num_samples, 1))
-    g2_base = torch.normal(mean=10, std=3, size=(num_samples, g2_size))
-    X[:, grouped_indices_list[1]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, g2_size))
+    # g2_base = torch.normal(mean=10, std=3, size=(num_samples, g2_size))
+    # X[:, grouped_indices_list[1]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, g2_size))
+    X[:, grouped_indices_list[1]] = torch.distributions.Exponential(1).sample((num_samples, g2_size))
 
     g3_size = len(grouped_indices_list[2])
     # g3_base = torch.rand(num_samples, 1)
     # X[:, grouped_indices_list[2]] = g3_base + torch.rand(num_samples, g3_size)
-    g3_base = torch.normal(mean=10, std=3, size=(num_samples, g3_size))
-    X[:, grouped_indices_list[2]] = g3_base + torch.normal(mean=0, std=0.1, size=(num_samples, g3_size))
-
+    # g3_base = torch.normal(mean=10, std=3, size=(num_samples, g3_size))
+    # X[:, grouped_indices_list[2]] = g3_base + torch.normal(mean=0, std=0.1, size=(num_samples, g3_size))
+    X[:, grouped_indices_list[2]] = torch.rand(num_samples, g3_size)
     # 15, 100
     for group_index in range(len(grouped_indices_list) - 3):
         g_size = len(grouped_indices_list[group_index + 3])
-        g_base = torch.normal(mean=10, std=3, size=(num_samples, g_size))
-        X[:, grouped_indices_list[group_index + 3]] = g_base + torch.normal(mean=0, std=0.1, size=(num_samples, g_size))
+        # g_base = torch.normal(mean=10, std=3, size=(num_samples, g_size))
+        # X[:, grouped_indices_list[group_index + 3]] = g_base + torch.normal(mean=0, std=0.1, size=(num_samples, g_size))
+        X[:, grouped_indices_list[group_index + 3]] = torch.normal(mean=0, std=1, size=(num_samples, g_size))
 
     # W = torch.rand(d) * 20 - 10
     W = torch.randn(d)
@@ -258,6 +261,42 @@ def generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indi
             W[:, grouped_indices_list[group_index]] = torch.randn(g_size)
         else:
             W[:, grouped_indices_list[group_index]] = torch.zeros(g_size)
+
+    v = torch.tensor(data_noise_sigma ** 2)
+    delta = torch.randn(data_sample_size) * v
+    Y = torch.matmul(X, W.unsqueeze(-1)).squeeze(-1).squeeze(0) + delta
+    return X, Y, W.squeeze(0)
+
+
+def generate_synthetic_data_with_group_correlation(dimension, grouped_indices_list, data_sample_size,
+                                                         data_noise_sigma):
+    X = torch.zeros((data_sample_size, dimension))
+    W = torch.zeros((1, dimension))
+    num_samples = data_sample_size
+    def generate_data(group_indices, noise):
+        g_size = len(group_indices)
+        mean = torch.zeros(g_size)
+        cov = 0.7 * torch.ones((g_size, g_size)) + 0.3 * torch.eye(g_size)
+        mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
+        x_samples = mvn_dist.sample(torch.Size([data_sample_size]))
+        X[:, group_indices] = x_samples + noise
+        W[:, group_indices] = torch.randn(g_size)
+
+    generate_data(grouped_indices_list[0], 0)
+    generate_data(grouped_indices_list[1], 0.1)
+    generate_data(grouped_indices_list[2], 0.8)
+
+    for i in range(3, len(grouped_indices_list)):
+        group_index = i
+        g_size = len(grouped_indices_list[group_index])
+
+        if i%2 == 0:
+            g3_base = torch.rand(num_samples, 1)
+            X[:, grouped_indices_list[group_index]] = g3_base + torch.rand(num_samples, g_size)
+        else:
+            g2_base = torch.distributions.Exponential(1).sample((num_samples, 1))
+            X[:, grouped_indices_list[group_index]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, g_size))
+        W[:, grouped_indices_list[group_index]] = torch.randn(g_size)
 
     v = torch.tensor(data_noise_sigma ** 2)
     delta = torch.randn(data_sample_size) * v
@@ -378,32 +417,11 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, ep
     return flows, lambda_max_likelihood
 
 
-def get_bardet_data():
-    gglasso = importr('gglasso')
-    robjects.r('data(bardet)')
-    bardet = robjects.r['bardet']
-    X = np.array(bardet.rx2('x'))
-    y = np.array(bardet.rx2('y'))
-    X_df = pd.DataFrame(X)
-    y_series = pd.Series(y)
-    X_tensor = torch.tensor(X_df.values, dtype=torch.float32)
-    y_tensor = torch.tensor(y_series.values, dtype=torch.float32)
-
-    grouped_indices_list = [list(range(i, i + 5)) for i in range(0, 100, 5)]
-    W = torch.randn(100)
-
-    return X_tensor, y_tensor, grouped_indices_list, W
-
-
 def main():
     # Set the parameters
     epochs = 1000
-    # dimension = 10
-    # grouped_indices_list = [[0, 2], [1, 3, 4], [5, 6, 7, 8, 9]]
-    # zero_weight_group_index = 2
-
-    dimension = 6
-    group_size = 1
+    dimension = 12
+    group_size = 3
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
 
     zero_weight_group_index = 1
@@ -422,13 +440,14 @@ def main():
           f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
-    # X, Y, W, variance = generate_synthetic_data(dimension, grouped_indices_list, zero_weight_group_index,
-    #                                             data_sample_size, data_noise_sigma)
-
-    X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
-    X, Y, W = generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
-                                                                   data_noise_sigma)
-    # X, Y, grouped_indices_list, W = get_bardet_data()
+    X, Y, W, variance = generate_synthetic_data(dimension, grouped_indices_list, zero_weight_group_index,
+                                                data_sample_size, data_noise_sigma)
+    #
+    # X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
+    # X, Y, W = generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
+    #                                                                data_noise_sigma)
+    # X, Y, W = generate_synthetic_data_with_group_correlation(dimension, grouped_indices_list, data_sample_size,
+    #                                                data_noise_sigma)
     # X /= X.std(0)
     X = (X - X.mean(0)) / X.std(0)
 
@@ -448,9 +467,15 @@ def main():
     Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Group-Lasso-Regression-CNF-Training-data")
     Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Group-Lasso-Regression-CNF-Test-data")
 
-    LassoRegressionCNF.posterior()
 
-
+    # flows, lambda_max_likelihood = LassoRegressionCNF.posterior(X_train, Y_train, X_torch, Y_torch, likelihood_sigma, epochs,
+    #                                          q_sample_size, context_size, lambda_min_exp, lambda_max_exp,
+    #                                          learning_rate, W)
+    #
+    # q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+    #
+    # Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Lasso-Regression-CNf-Training-data")
+    # Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Lasso-Regression-CNf-Test-data")
 
 
 if __name__ == "__main__":

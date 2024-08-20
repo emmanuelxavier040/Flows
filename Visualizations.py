@@ -774,6 +774,17 @@ def plot_residuals(Y_actual, Y_pred, title):
     plt.show()
 
 
+def plot_correlation_matrix(correlation_matrix, title):
+    std_devs = np.sqrt(np.diag(correlation_matrix))
+    correlation_matrix = correlation_matrix / np.outer(std_devs, std_devs)
+
+    plt.figure(figsize=(10, 5))
+    sns.heatmap(correlation_matrix, annot=False, cmap='coolwarm', cbar=True, vmin=-1, vmax=1)
+    plt.title('Correlation Matrix Heatmap : ' + title)
+    plt.show()
+    plt.savefig("./figures/Correlation_matrix_"+title+".pdf", dpi=300)
+
+
 # def plot_parameter_space_3d():
 #     import matplotlib.pyplot as plt
 #     import numpy as np

@@ -56,3 +56,8 @@ def Experiment_9():
           "GroupLassoCNF)")
     GroupLassoRegressionCNF.main()
 
+
+def Experiment_10():
+    print("Run the Group Lasso CNF for Betas. For a fixed lambda, get the MAP beta. Similarly, run the Group Lasso CNF"
+          " without Betas with taus. For the same lambda, get the MAP tau. With this tau, sample betas. "
+          "See if the betas from initial part matches to the one from second part.")

@@ -1,3 +1,4 @@
+import math
 
 import numpy as np
 import torch
@@ -9,11 +10,11 @@ from enflows.transforms.conditional import ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
 from torch import optim
 
-
 import Visualizations as View
+import GroupLassoRegressionCNF
+import Utilities
 
-from enflows.transforms.nonlinearities import Softplus, Exp
-
+from enflows.transforms.nonlinearities import Softplus
 
 torch.manual_seed(11)
 np.random.seed(10)
@@ -23,16 +24,15 @@ device = "cuda:0" if torch.cuda.is_available() else 'cpu'
 print("Device used : ", device)
 
 
-def log_posterior_unnormalized(constants, grouped_indices_list, tau_samples, X, Y, lambdas_exp):
-    c_1, c_2, yTΛy, c_4_JT, XTΛX = constants
-    log_posterior = c_1 + c_2 + yTΛy
+def log_posterior_unnormalized(constants, Λ, grouped_indices_list, tau_samples, X, Y, lambdas_exp):
+    c_1, gamma_term, yTΛy, c_4_JT, XTΛX = constants
+    log_posterior = c_1 + gamma_term + yTΛy
 
     n = len(X)
     log_posterior = log_posterior + (n * -0.5) * torch.log(2 * torch.tensor(torch.pi))
 
     n_groups = len(grouped_indices_list)
-    term_1 = -0.5 * torch.sum(torch.log(tau_samples), dim=-1)
-    log_posterior = log_posterior + term_1
+    log_posterior = log_posterior + -0.5 * torch.sum(torch.log(tau_samples), dim=-1)
 
     max_index = max(max(sublist) for sublist in grouped_indices_list) + 1
     repeat_counts = torch.tensor([len(sublist) for sublist in grouped_indices_list]).to(device)
@@ -48,14 +48,15 @@ def log_posterior_unnormalized(constants, grouped_indices_list, tau_samples, X, 
     term_3 = -0.5 * torch.linalg.slogdet(A)[1]
     log_posterior = log_posterior + term_3
 
-    A_inverse = torch.inverse(A)
+    # A_inverse = torch.inverse(A)
+    A_inverse = Utilities.woodbury_matrix_conversion(taus_diagonal_matrices, X.T, Λ, X, device)
     term_4 = 0.5 * torch.matmul(torch.matmul(c_4_JT, A_inverse), c_4_JT.T)
     log_posterior = log_posterior + term_4
 
     n_features = len(X[0])
     lambda_list = 10 ** lambdas_exp
 
-    term_5 = (- lambda_list**2 / 2) * tau_samples.sum(dim=-1)
+    term_5 = (- (lambda_list**2) / 2) * tau_samples.sum(dim=-1)
     log_posterior = log_posterior + term_5
 
     term_6 = 0.5 * (n_features + n_groups) * torch.log(0.5 * (lambda_list ** 2))
@@ -67,19 +68,20 @@ def log_posterior_unnormalized(constants, grouped_indices_list, tau_samples, X, 
 def precompute_constants(grouped_indices_list, X, Y, likelihood_cov_matrix):
     Λ = torch.inverse(likelihood_cov_matrix).to(device)
     c_1 = -0.5 * torch.linalg.slogdet(torch.inverse(Λ))[1]
-    c_2 = 0
+    gamma_term = 0
     for group_indices in grouped_indices_list:
-        c_2 = c_2 - torch.lgamma(0.5 * torch.tensor(len(group_indices) + 1))
+        gamma_term = gamma_term - torch.lgamma(0.5 * torch.tensor(len(group_indices) + 1))
 
     yTΛy = -0.5 * torch.matmul(torch.matmul(Y.T, Λ), Y)
 
-    c_4_JT = torch.matmul(torch.matmul(Y.T, ( Λ +Λ.T ) *0.5), X).to(device)
+    c_4_JT = torch.matmul(torch.matmul(Y.T, Λ), X).to(device)
     XTΛX = torch.matmul(torch.matmul(X.T, Λ), X).to(device)
 
-    return c_1.to(device), c_2.to(device), yTΛy, c_4_JT, XTΛX
+    return c_1.to(device), gamma_term.to(device), yTΛy, c_4_JT, XTΛX
 
 
-def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, tau_sample_size, context_size=100,
+def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, tau_sample_size,
+              context_size=100,
               lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
     file_name = f'CNF_d{d}_n{tau_sample_size}_e{epochs}_lmin{lambda_min_exp}_lmax{lambda_max_exp}'
 
@@ -87,6 +89,7 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
 
     print("Starting training the flows")
     losses = []
+    lambda_max_likelihood = -math.inf
 
     T0 = 5.0
     Tn = 0.01
@@ -103,7 +106,9 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
 
     try:
         n_data_samples = len(X_torch)
-        likelihood_cov_matrix = likelihood_sigma * torch.eye(n_data_samples).to(device)
+        likelihood_cov_matrix = (likelihood_sigma**2) * torch.eye(n_data_samples).to(device)
+        Λ = torch.inverse(likelihood_cov_matrix).to(device)
+
         constants = precompute_constants(grouped_indices_list, X_torch, Y_torch, likelihood_cov_matrix)
         for epoch in range(epochs):
             t = epoch // (epochs / cool_num_iter)
@@ -114,7 +119,8 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             context = lambdas_exp
             tau_samples, tau_log_prob = flows.sample_and_log_prob(num_samples=tau_sample_size, context=context)
-            log_p = log_posterior_unnormalized(constants, grouped_indices_list, tau_samples, X_torch, Y_torch, lambdas_exp)
+            log_p = log_posterior_unnormalized(constants, Λ, grouped_indices_list, tau_samples, X_torch, Y_torch,
+                                               lambdas_exp)
             log_p = torch.clamp(log_p, min=-1e10, max=1e10)
 
             loss = torch.mean(tau_log_prob - (log_p / T))
@@ -131,10 +137,16 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-                lambdas_sorted, q_samples_sorted, losses_sorted = sample_from_flow_for_plots(flows, grouped_indices_list,
-                                                                                 X_torch, Y_torch,
-                                                                                 likelihood_sigma, 100, 100,
-                                                                                 lambda_min_exp, lambda_max_exp)
+                lambdas_sorted, q_samples_sorted, losses_sorted = sample_from_flow_for_plots(flows,
+                                                                                             grouped_indices_list,
+                                                                                             X_torch, Y_torch,
+                                                                                             likelihood_sigma, 100, 100,
+                                                                                             lambda_min_exp,
+                                                                                             lambda_max_exp)
+
+                log_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+
                 solution_type = "Group-Lasso-Solution Path"
                 View.plot_flow_group_coefficients_path_vs_ground_truth(X, Y, lambdas_sorted,
                                                                        q_samples_sorted, solution_type)
@@ -148,7 +160,7 @@ def train_CNF(flows, d, grouped_indices_list, X, Y, X_torch, Y_torch, likelihood
 
     # save_model(flows, file_name)
 
-    return flows, losses
+    return flows, losses, lambda_max_likelihood
 
 
 def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n, noise):
@@ -259,19 +271,22 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
     return model
 
 
-def sample_from_flow_for_plots(flows, grouped_indices_list, X, Y, likelihood_sigma, context_size, flow_sample_size, lambda_min_exp, lambda_max_exp):
+def sample_from_flow_for_plots(flows, grouped_indices_list, X, Y, likelihood_sigma, context_size, flow_sample_size,
+                               lambda_min_exp, lambda_max_exp):
     num_iter = 10
     lambdas, flow_samples_list, losses = [], [], []
 
     with torch.no_grad():
         n_data_samples = len(X)
-        likelihood_cov_matrix = likelihood_sigma * torch.eye(n_data_samples)
+        likelihood_cov_matrix = (likelihood_sigma**2) * torch.eye(n_data_samples)
+        Λ = torch.inverse(likelihood_cov_matrix).to(device)
+
         constants = precompute_constants(grouped_indices_list, X, Y, likelihood_cov_matrix)
         for _ in range(num_iter):
             uniform_lambdas = torch.rand(context_size).to(device)
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             q_samples, q_log_probs = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
-            log_p_samples = log_posterior_unnormalized(constants, grouped_indices_list, q_samples, X, Y, lambdas_exp)
+            log_p_samples = log_posterior_unnormalized(constants, Λ, grouped_indices_list, q_samples, X, Y, lambdas_exp)
             loss = q_log_probs - log_p_samples
 
             lambdas.append((10 ** lambdas_exp).squeeze().cpu().detach().numpy())
@@ -279,7 +294,7 @@ def sample_from_flow_for_plots(flows, grouped_indices_list, X, Y, likelihood_sig
             losses.append(loss.cpu().detach().numpy())
 
     flow_samples_list, lambdas, losses = (np.concatenate(flow_samples_list, 0),
-                                       np.concatenate(lambdas, 0), np.concatenate(losses, 0))
+                                          np.concatenate(lambdas, 0), np.concatenate(losses, 0))
     lambda_sort_order = lambdas.argsort()
 
     lambdas_sorted = lambdas[lambda_sort_order]
@@ -305,11 +320,11 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, ep
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
 
-    flows, losses = train_CNF(flows, dimension, grouped_indices_list, X, Y, X_torch, Y_torch,
-                              likelihood_sigma, epochs,
-                              tau_sample_size,
-                              context_size, lambda_min_exp, lambda_max_exp,
-                              learning_rate)
+    flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, grouped_indices_list, X, Y, X_torch, Y_torch,
+                                                     likelihood_sigma, epochs,
+                                                     tau_sample_size,
+                                                     context_size, lambda_min_exp, lambda_max_exp,
+                                                     learning_rate)
 
     # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     # View.plot_loss(losses)
@@ -321,6 +336,7 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, ep
                                                                                  lambda_min_exp, lambda_max_exp)
 
     View.plot_flow_group_coefficients_path_vs_ground_truth(X, Y, lambdas_sorted, q_samples_sorted, solution_type)
+    return flows, lambda_max_likelihood
 
 
 def generate_group_indices(grouped_indices_list):
@@ -335,6 +351,34 @@ def generate_group_indices(grouped_indices_list):
     return group_indices
 
 
+def experiment_compare_betas_from_group_lasso(dimension, beta_flows, tau_flows, grouped_indices_list, lamda):
+    context_size = 1
+    uniform_lambdas = torch.rand(context_size).to(device)
+    context = (uniform_lambdas * (lamda - lamda) + lamda).view(-1, 1)
+    tau_samples, tau_log_prob = tau_flows.sample_and_log_prob(num_samples=1000, context=context)
+
+    max_index = max(max(sublist) for sublist in grouped_indices_list) + 1
+    repeat_counts = torch.tensor([len(sublist) for sublist in grouped_indices_list]).to(device)
+    values_repeated = tau_samples.repeat_interleave(repeat_counts, dim=-1)
+    flat_indices = [idx for sublist in grouped_indices_list for idx in sublist]
+    flat_indices_tensor = torch.tensor(flat_indices).to(device)
+    batch_size, depth, _ = tau_samples.shape
+    list_tensors = torch.zeros((batch_size, depth, max_index)).to(device)
+    list_tensors[:, :, flat_indices_tensor] = values_repeated.to(device)
+    taus_diagonal_matrices = torch.diag_embed(1 / list_tensors)
+    taus_diagonal_matrix = taus_diagonal_matrices.mean(dim=1)
+
+    mean = torch.zeros(dimension).to(device)
+    cov = taus_diagonal_matrix
+    mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
+    beta_samples_taus = mvn_dist.sample(torch.Size([1000]))
+    beta_samples_taus = beta_samples_taus.mean(dim=0)
+    print("Betas from taus : ", beta_samples_taus)
+
+    beta_samples, beta_log_prob = beta_flows.sample_and_log_prob(num_samples=1000, context=context)
+    print("Betas from flows : ", beta_samples.mean(dim=1))
+
+
 def main():
     # Set the parameters
     epochs = 1000
@@ -342,12 +386,12 @@ def main():
     group_size = 1
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
     zero_weight_group_index = 2
-    data_sample_size = 10
+    data_sample_size = 100
     data_noise_sigma = 2.0
     likelihood_sigma = 2
     tau_sample_size = 1
     context_size = 100
-    lambda_min_exp = -3
+    lambda_min_exp = -20
     lambda_max_exp = 3
     learning_rate = 1e-3
 
@@ -364,16 +408,20 @@ def main():
     X_torch = X.to(device)
     Y_torch = Y.to(device)
 
-    posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs, tau_sample_size, context_size,
-              lambda_min_exp, lambda_max_exp, learning_rate, W)
+    tau_flows, lambda_max_likelihood = posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs,
+                                             tau_sample_size, context_size,
+                                             lambda_min_exp, lambda_max_exp, learning_rate, W)
 
-    # GroupLassoRegressionCNF.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs, tau_sample_size,
-    #                           context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
+    beta_flows, lambda_max_likelihood_beta = GroupLassoRegressionCNF.posterior(X.detach().cpu().numpy(), Y.detach().cpu().numpy(),
+                                        X_torch, Y_torch, likelihood_sigma, grouped_indices_list, epochs, tau_sample_size,
+                                        context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
 
     # group_indices = generate_group_indices(grouped_indices_list)
     # group_lasso = GroupLasso(groups=group_indices, group_reg=0.1, l1_reg=0.1, n_iter=1000, old_regularisation=True)
     # group_lasso.fit(X, Y)
     # print("Learned coefficients:\n", group_lasso.coef_)
+
+    experiment_compare_betas_from_group_lasso(dimension, beta_flows, tau_flows, grouped_indices_list, lambda_max_likelihood)
 
     # LassoRegressionCNF.posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, tau_sample_size, context_size,
     #           lambda_min_exp, lambda_max_exp, learning_rate, W)
