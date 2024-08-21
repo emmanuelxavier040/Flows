@@ -23,6 +23,7 @@ torch.manual_seed(11)
 np.random.seed(10)
 
 import Visualizations as View
+import Utilities
 
 
 def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y, a_0, b_0):
@@ -31,7 +32,8 @@ def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y, a_0, b_0):
     cov_0 = torch.eye(d)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device="cpu")
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
     a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
@@ -40,7 +42,7 @@ def vectorized_log_t_distribution_unnormalized(Ws, d, X, Y, a_0, b_0):
     term_4 = Ws - μ_N
     term_3 = torch.matmul(torch.matmul(term_4.unsqueeze(1), (a_N/b_N)*Λ_N), term_4.unsqueeze(-1)).squeeze(1)
     log_t_unnormalized = term_1 * torch.log(1 + (1/(2*a_N))*term_3)
-    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log((b_N/a_N)*torch.det(torch.inverse(Λ_N)))
+    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log((b_N/a_N)*torch.det(Λ_N_1))
 
     term_3 = -0.5 * d * torch.log(2*a_N)
     term_4 = -0.5 * d * torch.log(torch.tensor(torch.pi))
@@ -110,7 +112,9 @@ def compute_analytical_posterior_for_fixed_variance(X, Y, prior_mean, prior_cova
     X_transpose_X = torch.matmul(X.t(), X)
     inv_prior_covariance = torch.inverse(prior_covariance)
     inv_posterior_covariance = inv_prior_covariance + X_transpose_X
-    posterior_covariance = torch.inverse(inv_posterior_covariance)
+    # posterior_covariance = torch.inverse(inv_posterior_covariance)
+    posterior_covariance = Utilities.woodbury_matrix_conversion(inv_prior_covariance, X.t(), torch.eye(X.shape[0]), X, device="cpu")
+
     term_2 = torch.matmul(prior_mean.t(), inv_prior_covariance) + torch.matmul(X.t(), Y)
     posterior_mean = torch.matmul(posterior_covariance, term_2)
     mean_np = posterior_mean.numpy()
@@ -125,13 +129,14 @@ def compute_posterior_t_distribution_parameters(X, y, a_0, b_0):
     cov_0 = torch.eye(d)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device="cpu") # Inverse of Λ_N
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
     a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
 
     mean = μ_N
-    scale_matrix = (b_N / a_N) * torch.inverse(Λ_N)
+    scale_matrix = (b_N / a_N) * Λ_N_1
     df = 2 * a_N
     return mean, scale_matrix, df
 
@@ -143,7 +148,8 @@ def compute_posterior_predictive_t_distribution_parameters(X_train, y_train, X_p
     cov_0 = torch.eye(d)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X_train.t(), X_train) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X_train.t(), y_train)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X_train.t(), torch.eye(X_train.shape[0]), X_train, device="cpu") # Inverse of Λ_N
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X_train.t(), y_train)))
     a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y_train.t(), y_train) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_0.t(), Λ_N), μ_N))

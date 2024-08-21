@@ -357,7 +357,8 @@ def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
     b_0 = torch.tensor(2 * N)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device)
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
     a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_0.t(), Λ_N), μ_N))

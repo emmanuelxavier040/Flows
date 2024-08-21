@@ -16,6 +16,7 @@ from scipy.special import gamma
 from torch import optim
 
 import Visualizations as View
+import Utilities
 
 torch.manual_seed(11)
 np.random.seed(10)
@@ -31,7 +32,8 @@ def vectorized_log_posterior_unnormalized(Ws, d, X, Y, a_0, b_0):
     cov_0 = torch.eye(d).to(device)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device) # Inverse of Λ_N
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
     a_N = a_0 + (N / 2)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
@@ -40,7 +42,7 @@ def vectorized_log_posterior_unnormalized(Ws, d, X, Y, a_0, b_0):
     # log_t_unnormalized = log_t_unnormalized + torch.log(gamma(a_N + d/2) / gamma(a_N))
     # log_t_unnormalized = log_t_unnormalized + a_N * torch.log(b_N)
     log_t_unnormalized = log_t_unnormalized + -0.5 * d * torch.log(torch.tensor(2 * torch.pi))
-    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(torch.inverse(Λ_N).to(device)))
+    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(Λ_N_1.to(device)))
 
     term_4 = Ws - μ_N
     term_3 = (torch.matmul(term_4, Λ_N) * term_4).sum(dim=-1)
@@ -56,7 +58,8 @@ def vectorized_log_posterior_lambda_inverse_gamma_unnormalized(Ws, d, X, Y, a_0,
     b_0 = torch.tensor(N).to(device)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.bmm(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)).unsqueeze(-1)).squeeze(-1)
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device)  # Inverse of Λ_N
+    μ_N = torch.bmm(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)).unsqueeze(-1)).squeeze(-1)
     a_N = a_0 + (N / 2)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0).unsqueeze(-1)
                        - torch.bmm(torch.bmm(μ_N.unsqueeze(1), Λ_N), μ_N.unsqueeze(-1)).squeeze(1)).squeeze(0)
@@ -65,7 +68,7 @@ def vectorized_log_posterior_lambda_inverse_gamma_unnormalized(Ws, d, X, Y, a_0,
     # log_t_unnormalized = log_t_unnormalized + torch.log(gamma(a_N + d/2) / gamma(a_N))
     # log_t_unnormalized = log_t_unnormalized + a_N * torch.log(b_N)
     log_t_unnormalized = log_t_unnormalized + -0.5 * d * torch.log(torch.tensor(2 * torch.pi))
-    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(torch.inverse(Λ_N).to(device)))
+    log_t_unnormalized = log_t_unnormalized + -0.5 * torch.log(torch.det(Λ_N_1.to(device)))
 
     term_4 = Ws - μ_N
     term_3 = (torch.matmul(term_4, Λ_N) * term_4).sum(dim=-1)
@@ -294,7 +297,8 @@ def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
     b_0 = a_0
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device)  # Inverse of Λ_N
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), y)))
     a_N = a_0 + (N / 2.)
     b_N = b_0 + 0.5 * (torch.matmul(y.t(), y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_0.t(), Λ_N), μ_N))
@@ -313,7 +317,8 @@ def compute_analytical_posterior_t_distribution_parameters(X, Y, a_0, b_0):
     cov_0 = torch.eye(d).to(device)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X.t(), X) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X.t(), torch.eye(X.shape[0]), X, device)  # Inverse of Λ_N
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X.t(), Y)))
     a_N = a_0 + (N / 2)
     b_N = b_0 + 0.5 * (torch.matmul(Y.t(), Y) + torch.matmul(torch.matmul(μ_0, Λ_0), μ_0) - torch.matmul(
         torch.matmul(μ_N.t(), Λ_N), μ_N))
@@ -348,12 +353,12 @@ def sample_Ws_with_lambda(flows, context_size, flow_sample_size, lambda_min_exp,
 
 def main():
     # Set the parameters
-    epochs = 1000
+    epochs = 500
     dimension, last_zero_indices = 3, 20
     data_sample_size = 3
     data_noise_sigma = 2.0
     q_sample_size = 1
-    context_size = 1000
+    context_size = 100
     a_0_min = 0
     a_0_max = 10
     b_0_min = 0

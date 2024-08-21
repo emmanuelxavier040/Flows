@@ -17,10 +17,10 @@ from enflows.flows.base import Flow
 from enflows.distributions.normal import StandardNormal
 from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.transforms.linear import NaiveLinear, ScalarScale, ScalarShift
-from enflows.transforms.lu import LULinear
-from enflows.transforms.svd import SVDLinear
+
 
 import Visualizations as View
+import Utilities
 
 torch.manual_seed(11)
 
@@ -68,12 +68,14 @@ def vectorized_log_posterior_predictive_unnormalized(y_samples, y_length, X_trai
     cov_0 = torch.eye(beta_dimension)
     Λ_0 = torch.inverse(cov_0)
     Λ_N = torch.matmul(X_train.t(), X_train) + Λ_0
-    μ_N = torch.matmul(torch.inverse(Λ_N), (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X_train.t(), y_train)))
+    Λ_N_1 = Utilities.woodbury_matrix_conversion(Λ_0, X_train.t(), torch.eye(X_train.shape[0]), X_train, device="cpu")
+    μ_N = torch.matmul(Λ_N_1, (torch.matmul(μ_0.t(), Λ_0) + torch.matmul(X_train.t(), y_train)))
     mean = torch.matmul(X_test, μ_N)
-    cov = variance * (torch.eye(y_length) + torch.matmul(torch.matmul(X_test, Λ_N), X_test.t()))
+    # cov = variance * (I +  X_test * Λ_N * X_test.t())
+    cov_1 = Utilities.woodbury_matrix_conversion(variance * torch.eye(y_length), variance*X_test, Λ_N, X_test.t(), device="cpu")
     term_1 = y_samples - mean
     log_posterior_predictive = -0.5 * torch.bmm(term_1.unsqueeze(1),
-              torch.matmul(torch.inverse(cov), term_1.unsqueeze(-1)).squeeze(-1).unsqueeze(-1)).squeeze()
+              torch.matmul(cov_1, term_1.unsqueeze(-1)).squeeze(-1).unsqueeze(-1)).squeeze()
     return log_posterior_predictive
 
 
@@ -256,7 +258,7 @@ def main():
     X_train, Y_train, W, variance, X_test, Y_test = generate_synthetic_data(dimension, num_data_samples, num_test_samples)
 
     # Train posterior flows
-    posterior(X_train, Y_train, W, variance)
+    # posterior(X_train, Y_train, W, variance)
 
     # Train posterior predictive flows
     posterior_predictive(X_train, Y_train, X_test, Y_test)

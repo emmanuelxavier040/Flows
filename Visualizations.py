@@ -774,6 +774,20 @@ def plot_residuals(Y_actual, Y_pred, title):
     plt.show()
 
 
+def plot_betas_from_flows_vs_from_tau_flows(dimension, beta_samples, tau_beta_samples, title):
+    boxplot_data_1 = [beta_samples[:, i].tolist() for i in range(dimension)]
+    boxplot_data_2 = [tau_beta_samples[:, i].tolist() for i in range(dimension)]
+    plt.figure(figsize=(12, 6))
+    plt.boxplot(boxplot_data_1, False, '', patch_artist=True)
+    plt.boxplot(boxplot_data_2, False, '', patch_artist=True)
+    plt.xticks(ticks=range(1, dimension + 1), labels=[f'D {i + 1}' for i in range(dimension)])
+    plt.title(title)
+    plt.ylabel('Values')
+    plt.tight_layout()
+    plt.savefig("./figures/Beta_comparison-Box-Plot-" + title + ".pdf")
+    plt.show()
+
+
 def plot_correlation_matrix(correlation_matrix, title):
     std_devs = np.sqrt(np.diag(correlation_matrix))
     correlation_matrix = correlation_matrix / np.outer(std_devs, std_devs)

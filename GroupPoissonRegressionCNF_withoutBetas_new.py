@@ -122,9 +122,9 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
                 View.plot_flow_group_coefficients_path_vs_ground_truth(X, Z, lambdas_sorted, tau_samples_sorted,
                                                                        solution_type)
 
-                # title = "GL-Without_betas_Log_marginal_likelihood"
-                # View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
-                #                                             title)
+                title = "GL-Poisson-Without_betas_Log_marginal_likelihood"
+                View.plot_log_marginal_likelihood_vs_lambda(X, Z, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
+                                                            title)
 
     except KeyboardInterrupt:
         print("interrupted..")
