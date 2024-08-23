@@ -102,6 +102,45 @@ def generate_synthetic_data_with_group_correlation(dimension, grouped_indices_li
     return X, Y, W.squeeze(0)
 
 
+def generate_synthetic_data_with_group_correlation_custom(dimension, grouped_indices_list, data_sample_size,
+                                                   data_noise_sigma, group_noise_sigma, col_replicate, group_replicate):
+    X = torch.zeros((data_sample_size, dimension))
+    W = torch.zeros((1, dimension))
+    num_samples = data_sample_size
+
+    group_indices = grouped_indices_list[0]
+    g_size = len(group_indices)
+    mean = torch.zeros(g_size)
+    cov = 0.5 * torch.ones((g_size, g_size)) + 0.9 * torch.eye(g_size)
+    mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
+    x_samples = mvn_dist.sample(torch.Size([data_sample_size]))
+
+    X[:, group_indices] = x_samples
+    W[:, group_indices] = torch.randn(g_size)
+
+    for i in range(0, group_replicate):
+        group_indices = np.array(grouped_indices_list[i+1])
+        g_size = len(group_indices)
+        noise_sigma = group_noise_sigma
+        col_to_replicate = np.arange(0, col_replicate, dtype=int)
+        col_to_random = np.arange(col_replicate, g_size, dtype=int)
+        noise = torch.randn(data_sample_size) * torch.tensor(noise_sigma ** 2)
+        X[:, group_indices[col_to_replicate]] = x_samples[:, col_to_replicate] + noise.unsqueeze(-1)
+        X[:, group_indices[col_to_random]] = torch.rand(num_samples, 1) + torch.rand(num_samples, len(col_to_random))
+        W[:, group_indices] = torch.randn(g_size)
+
+    for i in range(group_replicate+1, len(grouped_indices_list)):
+        group_index = i
+        g_size = len(grouped_indices_list[group_index])
+        X[:, grouped_indices_list[group_index]] = torch.rand(num_samples, 1) + torch.rand(num_samples, g_size)
+        W[:, grouped_indices_list[group_index]] = torch.randn(g_size)
+
+    v = torch.tensor(data_noise_sigma ** 2)
+    delta = torch.randn(data_sample_size) * v
+    Y = torch.matmul(X, W.unsqueeze(-1)).squeeze(-1).squeeze(0) + delta
+    return X, Y, W.squeeze(0)
+
+
 def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     assert n_features >= n_non_zero
 
@@ -141,7 +180,7 @@ def generate_tau_covariance_matrix(tau_MAP, grouped_indices_list):
 
 def main():
     # Set the parameters
-    epochs = 2000
+    epochs = 500
     dimension = 15
     group_size = 3
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
@@ -174,8 +213,14 @@ def main():
     group_noise_sigma = 0
     # for group_noise_sigma in group_noise_list:
 
-    X, Y, W = generate_synthetic_data_with_group_correlation(dimension, grouped_indices_list, data_sample_size,
-                                                             data_noise_sigma, group_noise_sigma)
+    # X, Y, W = generate_synthetic_data_with_group_correlation(dimension, grouped_indices_list, data_sample_size,
+    #                                                          data_noise_sigma, group_noise_sigma)
+
+    col_replicate = 2
+    group_replicate = 1
+    X, Y, W = generate_synthetic_data_with_group_correlation_custom(dimension, grouped_indices_list, data_sample_size,
+                                                   data_noise_sigma, group_noise_sigma, col_replicate, group_replicate)
+
     X /= X.std(0)
 
     train_ratio = 0.8

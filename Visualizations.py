@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from mpl_toolkits.mplot3d import axes3d
 
 import scipy.sparse
@@ -37,6 +38,7 @@ def plot_loss(loss_values):
     plt.ylabel('Loss')
     plt.savefig("./figures/Loss_CNF.pdf")
     plt.show()
+    plt.close()
 
 
 def plot_analytical_flow_distribution_on_grid(num_elements, mean_pred, cov_pred, flows, ground_truth,
@@ -87,6 +89,7 @@ def plot_analytical_flow_distribution_on_grid(num_elements, mean_pred, cov_pred,
     plt.tight_layout()
     plt.savefig("./figures/analytical_vs_flow_" + title + "_on_grid.pdf")
     plt.show()
+    plt.close()
 
 
 def plot_analytical_flow_posterior_general_with_samples(mean_np, cov_np,
@@ -115,6 +118,7 @@ def plot_analytical_flow_posterior_general_with_samples(mean_np, cov_np,
     plt.tight_layout()
     plt.savefig("./figures/analytical_vs_flow_normal_posterior_general_with_samples.pdf")
     plt.show()
+    plt.close()
 
 
 def plot_analytical_flow_posterior_t_distribution_on_grid(dimensions, location_np, scale_matrix, df, flows):
@@ -159,6 +163,7 @@ def plot_analytical_flow_posterior_t_distribution_on_grid(dimensions, location_n
     plt.tight_layout()
     plt.savefig("./figures/analytical_vs_flow_T-Posterior-General_on_grid.pdf")
     plt.show()
+    plt.close()
 
 
 def plot_analytical_flow_posterior_predictive_t_distribution_on_grid(dimensions, location_np, scale_matrix, df, flows):
@@ -204,6 +209,7 @@ def plot_analytical_flow_posterior_predictive_t_distribution_on_grid(dimensions,
     plt.tight_layout()
     plt.savefig("./figures/analytical_vs_flow_posterior_predictive_t_general_on_grid.pdf")
     plt.show()
+    plt.close()
 
 
 def plot_flow_ridge_inverse_gamma_parameters_1(dimension, mean, scale_matrices, dfs, a_0, b_0, q_samples, q_log_ps,
@@ -260,6 +266,7 @@ def plot_flow_ridge_inverse_gamma_parameters_1(dimension, mean, scale_matrices, 
     plt.tight_layout()
     plt.savefig("./figures/Ridge_CNF_Inv_Gamma_parameters-" + title + ".pdf")
     plt.show()
+    plt.close()
     return
 
 
@@ -291,7 +298,7 @@ def plot_flow_ridge_inverse_gamma_parameters(dimension, mean, scale_matrices, df
     plt.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
     plt.title("Inverse Gamma Hyper parameters Vs Posterior for Ridge Regression")
     plt.show()
-
+    plt.close()
     return
 
 
@@ -309,6 +316,7 @@ def plot_lasso_path_variance(lambdas_sorted, q_samples_sorted):
     plt.savefig("./figures/Coefficient_Vs_Max_Min_Lambda_Lasso_CNF.pdf")
     plt.tight_layout()
     plt.show()
+    plt.close()
     return
 
 
@@ -462,6 +470,7 @@ def plot_flow_path_vs_ground_truth(lambda_gt, coeff_gt, lambda_flow, coeff_flow,
         plt.legend()
     plt.savefig("./figures/GT_vs_flow_path_" + plot_title.lower().replace(" ", "_") + ".pdf", dpi=300)
     plt.show()
+    plt.close()
 
 
 # ============================= Solution Paths with Standardized Coefficient plots =============================
@@ -538,6 +547,7 @@ def plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, g
         "./figures/GT_vs_flow_path_standardized_coeff_" + plot_title.lower().replace(" ", "_") + ".pdf",
         dpi=300)
     plt.show()
+    plt.close()
 
 # ==============================================================================================================
 
@@ -575,7 +585,7 @@ def plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambda_sorted, q_samp
 
     for index in range(dimension):
         y_value = flow_norm_estimate[:, index]
-        plt.plot(lambda_sorted, y_value, color=colors[index], linestyle=my_linestyles[index], label=r'$\beta_{g' + str(index+1)+'}$')
+        plt.plot(lambda_sorted, y_value, color=colors[index], linestyle=my_linestyles[index], label=r'||$\beta_{g' + str(index+1)+'}$||')
 
     plt.xlabel(r'$\lambda$')
     plt.ylabel('Group Norm')
@@ -584,6 +594,8 @@ def plot_group_norms_vs_lambda(X, Y, grouped_indices_list, lambda_sorted, q_samp
     plt.xscale("log")
     plt.tight_layout()
     plt.savefig("./figures/Group_norms_vs_lambda" + plot_title.lower().replace(" ", "_") + ".pdf", dpi=300)
+    plt.show()
+    plt.close()
     return
 
 
@@ -616,6 +628,7 @@ def plot_flow_group_coefficients_path_vs_ground_truth(X, Y, lambda_sorted, tau_s
     plt.tight_layout()
     plt.savefig("./figures/Group_Lasso_Group_coefficients_Vs_Lambda" + solution_type + ".pdf")
     plt.show()
+    plt.close()
 
 
 def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, variance, title="Distribution", grouped_indices_list=None, group_lasso=False):
@@ -690,6 +703,7 @@ def plot_log_marginal_likelihood_vs_lambda(X, Y, lambda_sorted, losses_sorted, v
     plt.tight_layout()
     plt.savefig("./figures/Log_Marginal_Likelihood-" + title + ".pdf")
     plt.show()
+    plt.close()
 
     f = open(f"./figures/Best_lambda_{title}.txt", "a")
     f.write(f"====================================================\n")
@@ -751,6 +765,7 @@ def plot_t_distributions_for_each_invergamma_parameter_pairs(dimension, mean, sc
     plt.savefig("./figures/analytical_vs_flow_posterior_predictive_t_general_on_grid-" + str(a_0[0]) + "-" + str(
         b_0[0]) + ".pdf")
     plt.show()
+    plt.close()
     return
 
 
@@ -772,20 +787,51 @@ def plot_residuals(Y_actual, Y_pred, title):
     ax2.set_ylabel('Residuals')
     plt.savefig("./figures/Residual-Plot-" + title + ".pdf")
     plt.show()
+    plt.close()
 
 
 def plot_betas_from_flows_vs_from_tau_flows(dimension, beta_samples, tau_beta_samples, title):
-    boxplot_data_1 = [beta_samples[:, i].tolist() for i in range(dimension)]
-    boxplot_data_2 = [tau_beta_samples[:, i].tolist() for i in range(dimension)]
-    plt.figure(figsize=(12, 6))
-    plt.boxplot(boxplot_data_1, False, '', patch_artist=True)
-    plt.boxplot(boxplot_data_2, False, '', patch_artist=True)
-    plt.xticks(ticks=range(1, dimension + 1), labels=[f'D {i + 1}' for i in range(dimension)])
-    plt.title(title)
-    plt.ylabel('Values')
-    plt.tight_layout()
-    plt.savefig("./figures/Beta_comparison-Box-Plot-" + title + ".pdf")
+    # boxplot_data_1 = [beta_samples[:, i].tolist() for i in range(dimension)]
+    # boxplot_data_2 = [tau_beta_samples[:, i].tolist() for i in range(dimension)]
+    # plt.figure(figsize=(12, 6))
+    # plt.boxplot(boxplot_data_1, False, '', patch_artist=True)
+    # plt.boxplot(boxplot_data_2, False, '', patch_artist=True)
+    # plt.xticks(ticks=range(1, dimension + 1), labels=[f'D {i + 1}' for i in range(dimension)])
+    # plt.title(title)
+    # plt.ylabel('Values')
+    # plt.tight_layout()
+    fig, axes = plt.subplots(nrows=1, ncols=dimension, figsize=(17, 5), sharey=False)
+    colors_tensor_1 = []
+    colors_tensor_2 = []
+    for i in range(dimension):
+        data1 = beta_samples[:, i].tolist()
+        data2 = tau_beta_samples[:, i].tolist()
+        v1 = axes[i].violinplot(data1, showmeans=True)
+        v2 = axes[i].violinplot(data2, showmeans=True)
+        colors_tensor_1.append(v1['bodies'][0].get_facecolor().flatten())
+        colors_tensor_2.append(v2['bodies'][0].get_facecolor().flatten())
+        axes[i].set_title(r'$\beta$' + str(i))
+
+        if i == 0:
+            axes[i].set_ylabel('Values')
+
+        else:
+            axes[i].set_ylabel('')
+        axes[i].set_xlabel('')
+        axes[i].set_xticks([])
+
+    blue_patch = Patch(facecolor=colors_tensor_1[0], edgecolor='black')
+    green_patch = Patch(facecolor=colors_tensor_2[0], edgecolor='black')
+
+    fig.legend([blue_patch, green_patch], [r'$\beta_{MAP}$', r'$\beta_{MAP}$ from $\tau^2_{MAP}$'],
+               loc='upper right', bbox_to_anchor=(1, 1))
+
+    plt.tight_layout(pad=3.4, h_pad=10, w_pad=1.5)
+    plt.subplots_adjust(top=0.8, right=0.95)
+
+    plt.savefig("./figures/Beta_comparison-Violin-Plot-" + title + ".pdf")
     plt.show()
+    plt.close()
 
 
 def plot_correlation_matrix(correlation_matrix, title):
@@ -797,6 +843,7 @@ def plot_correlation_matrix(correlation_matrix, title):
     plt.title('Correlation Matrix Heatmap : ' + title)
     plt.show()
     plt.savefig("./figures/Correlation_matrix_"+title+".pdf", dpi=300)
+    plt.close()
 
 
 # def plot_parameter_space_3d():
