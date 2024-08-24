@@ -1,27 +1,27 @@
-import General
-import General_with_InverseGamma
-import General_with_hyper_priors
+import RidgeRegression
+import RidgeRegression_with_InverseGamma
+import RidgeRegression_with_hyper_priors
 import GroupLassoRegression
 import GroupLassoRegressionCNF
 import LassoRegression
 import LassoRegressionCNF
 import RidgeRegressionCNF
-import RidgeRegression_Inverse_Gamma_CNF
+import RidgeRegressionCNF_Inverse_Gamma
 
 
 def Experiment_1():
     print("NF Ridge, without lambda, Analytical Posterior Vs flow Posterior (General)")
-    General.main()
+    RidgeRegression.main()
 
 
 def Experiment_2():
     print("NF Ridge, without lambda, Analytical vs Flow Posterior Predictive - Normal dist (hyper prior)")
-    General_with_hyper_priors.main()
+    RidgeRegression_with_hyper_priors.main()
 
 
 def Experiment_3():
     print("NF Ridge, without lambda, Integrated out variance, Analytical vs Flow  posterior -T-dist (Inverse Gamma)")
-    General_with_InverseGamma.main()
+    RidgeRegression_with_InverseGamma.main()
 
 
 def Experiment_4():
@@ -42,7 +42,7 @@ def Experiment_6():
 
 def Experiment_7():
     print("CNF, Ridge, inverse gamma parameters vs Posterior Ridge CNF Inverse Gamma")
-    RidgeRegression_Inverse_Gamma_CNF.main()
+    RidgeRegressionCNF_Inverse_Gamma.main()
 
 
 def Experiment_8():

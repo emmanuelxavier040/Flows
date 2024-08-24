@@ -428,11 +428,11 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
 
 def main():
     # Set the parameters
-    epochs = 1000
-    dimension, last_zero_indices = 5, 20
+    epochs = 2000
+    dimension = 5
     data_sample_size = 7
 
-    dimension, last_zero_indices = 7, 20
+    dimension = 7
     data_sample_size = 200
 
     data_noise_sigma = 1.0
@@ -444,7 +444,7 @@ def main():
     learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
-          f"Dimension:{dimension}, last_zero_indices:{last_zero_indices}, "
+          f"Epochs:{epochs}, Dimension:{dimension}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
     # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)

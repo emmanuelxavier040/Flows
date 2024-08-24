@@ -29,14 +29,14 @@ glmnet = robjects.globalenv['Glmnet']
 cv_glmnet = robjects.globalenv['CVGlmnet']
 
 
-def plot_loss(loss_values):
+def plot_loss(loss_values, title=""):
     sns.set(style="whitegrid")
     plt.figure(figsize=(10, 5))
     sns.lineplot(x=range(len(loss_values)), y=loss_values, color='blue', marker='o', markersize=5)
     plt.title('Training Loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.savefig("./figures/Loss_CNF.pdf")
+    plt.savefig("./figures/Loss_CNF"+title+".pdf")
     plt.show()
     plt.close()
 
@@ -481,8 +481,11 @@ def plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_
     # alphas_ridge, coefs_ridge, _ = enet_path(X, Y, alphas=lambda_sorted, l1_ratio=0)
     alphas_ridge, coefs_ridge = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=0)
     ridge_coeff_estimate = coefs_ridge.T
-    plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, ridge_coeff_estimate, plot_title,
-                                                             beta_group_map={}, group_lasso=False)
+
+    list_q_samples_sorted = [q_samples_sorted]
+    plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, ridge_coeff_estimate,
+                                                                       plot_title, beta_group_map={},
+                                                                       group_lasso=False, line_width=1.2)
 
 
 def plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted, solution_type):
@@ -490,8 +493,11 @@ def plot_flow_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_
     # alphas_lasso, coefs_lasso, _ = lasso_path(X, Y, alphas=lambda_sorted)
     alphas_ridge, coefs_lasso = execute_glmnet(X.cpu().detach().numpy(), Y.cpu().detach().numpy(), lambda_sorted, alpha=1)
     lasso_coeff_estimate = coefs_lasso.T
-    plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, lasso_coeff_estimate, plot_title,
-                                                             beta_group_map={}, group_lasso=False)
+
+    list_q_samples_sorted = [q_samples_sorted]
+    plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, lasso_coeff_estimate,
+                                                                       plot_title, beta_group_map={},
+                                                                       group_lasso=False, line_width=1.2)
 
 
 def plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, grouped_indices_list, lambda_sorted,
@@ -507,37 +513,60 @@ def plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, g
 
     plot_title = "Group-Lasso with CNF - Standardized Coefficients - " + solution_type
 
-    plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, gglasso_coeff_estimate, plot_title,
-                                                             beta_group_map, group_lasso=True)
+    list_q_samples_sorted = [q_samples_sorted]
+    plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, gglasso_coeff_estimate,
+                                                                       plot_title, beta_group_map,
+                                                                       group_lasso=False, line_width=1.2)
 
 
-def plot_flow_path_vs_ground_truth_standardized_coefficients(q_samples_sorted, gt_coeffs, plot_title, beta_group_map,
-                                                             group_lasso):
-    dimension = q_samples_sorted.shape[-1]
+def plot_recovered_betas_vs_ground_truth_standardized_coefficients(X, Y, grouped_indices_list, lambda_sorted,
+                                                                         list_q_samples_sorted, title):
+    beta_group_map = {}
+    for group_index, group in enumerate(grouped_indices_list):
+        for beta_index in group:
+            beta_group_map[beta_index] = group_index
 
-    flow_coeff_estimate = np.median(q_samples_sorted, axis=1)
-    flow_lambda = np.linalg.norm(flow_coeff_estimate, axis=1) / np.linalg.norm(flow_coeff_estimate, axis=1).max()
-    flow_lambda_sort_order = flow_lambda.argsort()
-    x_flows = flow_lambda[flow_lambda_sort_order]
-    y_flows = flow_coeff_estimate[flow_lambda_sort_order]
+    group = convert_group_indices_for_gglasso(grouped_indices_list)
+    W_glasso = glasso_path(X, Y, group, np.array(lambda_sorted))
+    gglasso_coeff_estimate = W_glasso[1].T
+
+    plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, gglasso_coeff_estimate,
+                                                                       title, beta_group_map, True, 0.85)
+
+
+def plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, gt_coeffs, plot_title, beta_group_map,
+                                                             group_lasso, line_width=1.5):
+    dimension = list_q_samples_sorted[0].shape[-1]
+    colors = ['blue', 'green', 'red', 'brown', 'magenta', 'yellow', 'black', 'orange', 'purple', 'cyan']
+    colors = list(islice(cycle(colors), dimension))
+    plt.figure(figsize=(10, 5))
+    my_linestyles = [
+        'solid',
+        (5, (10, 3)),
+        (0, (1, 1))]
+    my_linestyles = list(islice(cycle(my_linestyles), dimension))
+
+    for flow_index, q_samples_sorted in enumerate(list_q_samples_sorted):
+        flow_coeff_estimate = np.median(q_samples_sorted, axis=1)
+        flow_lambda = np.linalg.norm(flow_coeff_estimate, axis=1) / np.linalg.norm(flow_coeff_estimate, axis=1).max()
+        flow_lambda_sort_order = flow_lambda.argsort()
+        x_flows = flow_lambda[flow_lambda_sort_order]
+        y_flows = flow_coeff_estimate[flow_lambda_sort_order]
+
+        for index in range(dimension):
+            color = colors[beta_group_map[index]] if group_lasso else colors[index]
+            y_value = y_flows[:, index]
+            plt.plot(x_flows, y_value, linestyle=my_linestyles[flow_index], linewidth=line_width, color=color, label=r'$\beta$' + str(index))
 
     gt_coeff_estimate = gt_coeffs
     gt_lambdas = np.linalg.norm(gt_coeff_estimate, axis=1) / np.linalg.norm(gt_coeff_estimate, axis=1).max()
     gt_lambdas_sort_order = gt_lambdas.argsort()
     x_gt = gt_lambdas[gt_lambdas_sort_order]
     y_gt = gt_coeff_estimate[gt_lambdas_sort_order]
-
-    colors = ['blue', 'green', 'red', 'brown', 'magenta', 'yellow', 'black', 'orange', 'purple', 'cyan']
-    colors = list(islice(cycle(colors), dimension))
-
-    plt.figure(figsize=(10, 5))
-
     for index in range(dimension):
         color = colors[beta_group_map[index]] if group_lasso else colors[index]
-        y_value = y_flows[:, index]
-        plt.plot(x_flows, y_value, color=color, label=r'$\beta$' + str(index))
         y_value = y_gt[:, index]
-        plt.plot(x_gt, y_value, linestyle="dashed", color=color, label=r'$\beta$' + str(index))
+        plt.plot(x_gt, y_value, linestyle="dashed", linewidth=line_width, color=color, label=r'$\beta$' + str(index))
 
     plt.xlabel(r'$|\beta|$ / max $|\beta|$')
     plt.ylabel('Coefficients')

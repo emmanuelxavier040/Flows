@@ -77,7 +77,6 @@ def generate_synthetic_data(d, n):
     num_data_samples = torch.Size([n])
     X = data_mvn_dist.sample(num_data_samples)
     W = torch.rand(d)
-    # W = torch.tensor([2.5, 0.4])
     v = torch.tensor(0.5)
     noise = torch.randn(num_data_samples) * v
     Y = torch.matmul(X, W) + noise
@@ -204,7 +203,6 @@ def main():
     X_train, Y_train, W, variance, X_test, Y_test = generate_synthetic_data(dimension, num_samples)
 
     posterior(X_train, Y_train, W, dimension)
-
 
 
 if __name__ == "__main__":

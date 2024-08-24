@@ -1,4 +1,3 @@
-
 import torch
 from torch import optim
 import numpy as np
@@ -23,19 +22,19 @@ def vectorized_log_likelihood_unnormalized(Ws, X, Y, likelihood_sigma):
     XWs = torch.matmul(X, Ws_reshaped)
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
-    log_likelihood = -0.5 * (1 / likelihood_sigma**2 ) * torch.sum(squared_errors, dim=1)
+    log_likelihood = -0.5 * (1 / likelihood_sigma ** 2) * torch.sum(squared_errors, dim=1)
     return log_likelihood
 
 
 def vectorized_log_likelihood_t_distribution_unnormalized(Ws, d, X, Y):
-    a_0 = len(X)/2
+    a_0 = len(X) / 2
     b_0 = a_0
     Ws_reshaped = Ws.unsqueeze(-1)
     XWs = torch.matmul(X, Ws_reshaped)
     XWs = XWs.squeeze()
     squared_errors = (Y - XWs) ** 2
-    term_1 = -(a_0 + d/2)
-    term_2 = torch.log(1 + (1/(2 * b_0)) * torch.sum(squared_errors, dim=1))
+    term_1 = -(a_0 + d / 2)
+    term_2 = torch.log(1 + (1 / (2 * b_0)) * torch.sum(squared_errors, dim=1))
     log_likelihood = term_1 * term_2
     return log_likelihood
 
@@ -54,7 +53,7 @@ def sum_of_norms_of_W_groups(Ws, indices_list):
 def vectorized_log_prior_unnormalized(Ws, d, indices_list, lambdas_list, likelihood_sigma):
     sum_tensor = sum_of_norms_of_W_groups(Ws, indices_list)
     std_dev = likelihood_sigma
-    log_prior = -(lambdas_list/std_dev)*sum_tensor
+    log_prior = -(lambdas_list / std_dev) * sum_tensor
     return log_prior
 
 
@@ -66,7 +65,7 @@ def vectorized_log_posterior_unnormalized(q_samples, d, X, Y, indices_list, lamb
     return log_posterior
 
 
-def train(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda = 1.0):
+def train(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda=1.0):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows")
     losses = []
@@ -84,7 +83,7 @@ def train(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_siz
     return flows, losses
 
 
-def train_2(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda = 1.0):
+def train_2(flows, d, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda=1.0):
     optimizer = optim.Adam(flows.parameters())
     print("Starting training the flows")
     losses = []
@@ -114,9 +113,7 @@ def generate_synthetic_data(d, n, indices_list, l, noise):
     X = data_mvn_dist.sample(num_data_samples)
     W = torch.rand(d)
 
-    # W[-l:] = 0
     W[indices_list[l]] = 0
-    # W = torch.tensor([50.2, 30.7, 29.4, 4.3, 4.3])
     v = torch.tensor(noise)
     delta = torch.randn(num_data_samples) * v
     Y = torch.matmul(X, W) + delta
@@ -169,7 +166,8 @@ def main():
 
     flows, losses = train_2(flows, dimension, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda)
     q_samples = flows.sample(100)
-    sample_mean_t_likelihood, sample_std_t_likelihood = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples, dim=0).tolist()
+    sample_mean_t_likelihood, sample_std_t_likelihood = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples,
+                                                                                                         dim=0).tolist()
 
     for i in range(dimension):
         print(f"Index {i}: {round(fixed[i], 4)} :: {round(sample_mean[i], 4)}+/-{round(sample_std[i], 4)} "
