@@ -139,9 +139,13 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
             loss = torch.mean(q_log_prob - (log_p / T))
             loss.backward()
 
+            if epoch % 50 == 0:
+                View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="During training epoch-" + str(epoch))
+
             if epoch % 10 == 0 or epoch + 1 == epochs:
                 if epoch % cool_step_iteration == 0:
                     print("Temperature: ", T)
+
                 print("Loss after iteration {}: ".format(epoch), loss.tolist())
             losses.append(loss.detach().item())
             torch.nn.utils.clip_grad_norm_(flows.parameters(), 1)
@@ -153,13 +157,14 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-                solution_type = "Solution Path"
-                lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
-                View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
+                View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="Posterior")
 
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
                                                                                       likelihood_sigma, 200, 100,
                                                                                       lambda_min_exp, lambda_max_exp)
+                solution_type = "Solution Path"
+                View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambdas_sorted, q_samples_sorted, 1, solution_type)
+
                 log_likelihood_means = np.mean(-losses_sorted, axis=1)
                 lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
 
@@ -336,21 +341,6 @@ def print_original_vs_flow_learnt_parameters(d, fixed, flows, context=None):
         print(f"Index {i}       :     {fixed[i]}      :       {sample_mean[i]}")
 
 
-def sample_Ws(flows, context_size, flow_sample_size, lambda_min_exp, lambda_max_exp):
-    uniform_lambdas = torch.rand(context_size).to(device)
-    lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
-    q_samples, log_ps = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
-    _, lambda_sort_order = lambdas_exp.sort(0)
-
-    # Reshaping the lambda_sort_order
-    lambda_sort_order = lambda_sort_order.squeeze()
-
-    lambda_exp_sorted = lambdas_exp[lambda_sort_order]
-    lambda_sorted = 10 ** lambda_exp_sorted.squeeze().cpu().detach().numpy()
-    q_samples_sorted = q_samples[lambda_sort_order].cpu().detach().numpy()
-    return lambda_sorted, q_samples_sorted
-
-
 def compute_analytical_log_marginal_likelihood(X, y, μ_0, cov_0):
     N = len(X)
     a_0 = torch.tensor(2 * N)
@@ -409,30 +399,35 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
 
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
+    View.plot_parameter_space_3d(device, flows, plot_marginal=True, title="Before Training")
 
     flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
                                                      likelihood_sigma, epochs,
                                                      q_sample_size,
                                                      context_size, lambda_min_exp, lambda_max_exp,
                                                      learning_rate)
+    View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="MAP")
+
     solution_type = "MAP Solution Path with Simulated Annealing"
     print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
-    lambda_sorted, q_samples_sorted = sample_Ws(flows, 100, 150, lambda_min_exp, lambda_max_exp)
-    View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambda_sorted, q_samples_sorted, 1, solution_type)
+    lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
+                                                                          likelihood_sigma, 200, 100,
+                                                                          lambda_min_exp, lambda_max_exp)
+    View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambdas_sorted, q_samples_sorted, 1, solution_type)
 
     solution_type = "MAP"
-    View.plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambda_sorted, q_samples_sorted,
+    View.plot_flow_ridge_path_vs_ground_truth_standardized_coefficients(X, Y, lambdas_sorted, q_samples_sorted,
                                                                         solution_type)
     return flows, lambda_max_likelihood
 
 
 def main():
     # Set the parameters
-    epochs = 2000
+    epochs = 1000
     dimension = 5
     data_sample_size = 7
 
-    dimension = 7
+    dimension = 3
     data_sample_size = 200
 
     data_noise_sigma = 1.0

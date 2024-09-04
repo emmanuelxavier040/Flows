@@ -257,7 +257,7 @@ def main():
     X_train, Y_train, W, variance, X_test, Y_test = generate_synthetic_data(dimension, num_data_samples, num_test_samples)
 
     # Train posterior flows
-    # posterior(X_train, Y_train, W, variance)
+    posterior(X_train, Y_train, W, variance)
 
     # Train posterior predictive flows
     posterior_predictive(X_train, Y_train, X_test, Y_test)

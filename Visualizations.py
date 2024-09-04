@@ -516,7 +516,7 @@ def plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Y, g
     list_q_samples_sorted = [q_samples_sorted]
     plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_samples_sorted, gglasso_coeff_estimate,
                                                                        plot_title, beta_group_map,
-                                                                       group_lasso=False, line_width=1.2)
+                                                                       group_lasso=True, line_width=1.2)
 
 
 def plot_recovered_betas_vs_ground_truth_standardized_coefficients(X, Y, grouped_indices_list, lambda_sorted,
@@ -573,7 +573,7 @@ def plot_multiple_flow_paths_vs_ground_truth_standardized_coefficients(list_q_sa
     plt.title(plot_title)
     plt.tight_layout()
     plt.savefig(
-        "./figures/GT_vs_flow_path_standardized_coeff_" + plot_title.lower().replace(" ", "_") + ".pdf",
+        "./figures/Standardized_coeff_" + plot_title.lower().replace(" ", "_") + ".pdf",
         dpi=300)
     plt.show()
     plt.close()
@@ -875,90 +875,56 @@ def plot_correlation_matrix(correlation_matrix, title):
     plt.close()
 
 
-# def plot_parameter_space_3d():
-#     import matplotlib.pyplot as plt
-#     import numpy as np
-#
-#     from matplotlib import cm
-#     from mpl_toolkits.mplot3d.axes3d import get_test_data
-#
-#     # set up a figure twice as wide as it is tall
-#     fig = plt.figure(figsize=plt.figaspect(0.5))
-#
-#     # =============
-#     # First subplot
-#     # =============
-#     # set up the Axes for the first plot
-#     ax = fig.add_subplot(1, 2, 1, projection='3d')
-#
-#     # plot a 3D surface like in the example mplot3d/surface3d_demo
-#     X = np.arange(-5, 5, 0.25)
-#     Y = np.arange(-5, 5, 0.25)
-#     X, Y = np.meshgrid(X, Y)
-#     R = np.sqrt(X ** 2 + Y ** 2)
-#     Z = np.sin(R)
-#     surf = ax.plot_surface(X, Y, Z, rstride=1, cstride=1, cmap=cm.coolwarm,
-#                            linewidth=0, antialiased=False)
-#     ax.set_zlim(-1.01, 1.01)
-#     fig.colorbar(surf, shrink=0.5, aspect=10)
-#
-#     # ==============
-#     # Second subplot
-#     # ==============
-#     # set up the Axes for the second plot
-#     ax = fig.add_subplot(1, 2, 2, projection='3d')
-#
-#     # plot a 3D wireframe like in the example mplot3d/wire3d_demo
-#     X, Y, Z = get_test_data(0.05)
-#     ax.plot_wireframe(X, Y, Z, rstride=10, cstride=10)
-#
-#     plt.show()
-#
-#     import numpy as np
-#     import matplotlib.pyplot as plt
-#     from mpl_toolkits.mplot3d import Axes3D
-#     from matplotlib import cm
-#     from scipy.interpolate import griddata
-#
-#     # Example: Tensor of multiple 3D points
-#     # Assume this is your data (n x 3) tensor
-#     tensor_3d = np.array([
-#         [1.0, 2.0, 3.0],
-#         [2.0, 3.0, 4.0],
-#         [3.0, 4.0, 1.5],
-#         [4.0, 5.0, 3.5],
-#         [5.0, 6.0, 5.0],
-#         [6.0, 7.0, 4.0],
-#         [7.0, 8.0, 2.0]
-#     ])
-#
-#     # Ensure that x, y, and z are floats
-#     x = np.asarray(tensor_3d[:, 0], dtype=float)
-#     y = np.asarray(tensor_3d[:, 1], dtype=float)
-#     z = np.asarray(tensor_3d[:, 2], dtype=float)
-#
-#     # Create a regular grid covering the domain of the data
-#     grid_x, grid_y = np.meshgrid(np.linspace(min(x), max(x), 100), np.linspace(min(y), max(y), 100))
-#
-#     # Interpolate the z values onto the grid
-#     grid_z = griddata((x, y), z, (grid_x, grid_y), method='cubic')
-#
-#     # Create a new 3D plot
-#     fig = plt.figure()
-#     ax = fig.add_subplot(111, projection='3d')
-#
-#     # Plot the surface using the interpolated grid
-#     surf = ax.plot_surface(grid_x, grid_y, grid_z, rstride=1, cstride=1, cmap=cm.coolwarm, linewidth=0,
-#                            antialiased=False)
-#
-#     # Set the Z-axis limits based on your data
-#     ax.set_zlim(np.nanmin(grid_z), np.nanmax(grid_z))
-#
-#     # Add a color bar for the surface plot
-#     fig.colorbar(surf, shrink=0.5, aspect=10)
-#
-#     # Show the plot
-#     plt.show()
-#
-#     return
-# plot_parameter_space_3d()
+def plot_parameter_space_3d(device, flows, plot_marginal=False, title=""):
+    lambda_exp = 0.0
+    dimensions = 3
+    sample_size = 20
+
+    x = torch.linspace(-3, 3, sample_size)
+    y = torch.linspace(-3, 3, sample_size)
+    z = torch.linspace(-3, 3, sample_size)
+    X, Y, Z = torch.meshgrid(x, y, z, indexing='ij')
+
+    flow_inputs = torch.cat([X.reshape(-1, 1), Y.reshape(-1, 1), Z.reshape(-1, 1)], dim=1).to(device)
+
+    context = torch.tensor([lambda_exp]).to(device)
+    flow_density = flows.log_prob(flow_inputs, context=context.repeat(flow_inputs.shape[0]).unsqueeze(1))
+    reshape_argument = [sample_size for _ in range(dimensions)]
+    flow_density_reshaped = flow_density.reshape(*reshape_argument).exp()
+
+    if plot_marginal:
+        fig = plt.figure(figsize=plt.figaspect(0.5))
+        ax = fig.add_subplot(1, 2, 1, projection='3d')
+    else:
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+
+    slice_index = X.shape[2] // 2
+    X_np = X.detach().cpu().numpy()[:, :, slice_index]
+    Y_np = Y.detach().cpu().numpy()[:, :, slice_index]
+    flow_density_reshaped_np = flow_density_reshaped.detach().cpu().numpy()[:, :, slice_index]
+    ax.plot_surface(X_np, Y_np, flow_density_reshaped_np, cmap='viridis')
+
+    ax.set_xlabel(r'$\beta_0$')
+    ax.set_ylabel(r'$\beta_1$')
+    ax.set_zticks([])
+    ax.set_zticklabels([])
+    ax.zaxis.label.set_visible(False)
+
+    if plot_marginal:
+        ax = fig.add_subplot(1, 2, 2, projection='3d')
+        ax.plot_surface(X_np, Y_np, flow_density_reshaped_np, edgecolor='royalblue', lw=0.5, rstride=1, cstride=1, alpha=0.3)
+        ax.contourf(X_np, Y_np, flow_density_reshaped_np, zdir='z', offset=-0.07, cmap='coolwarm')
+        ax.contourf(X_np, Y_np, flow_density_reshaped_np, zdir='x', offset=-3, cmap='coolwarm')
+        ax.contourf(X_np, Y_np, flow_density_reshaped_np, zdir='y', offset=3, cmap='coolwarm')
+        ax.set(xlim=(-3, 3), ylim=(-3, 3), zlim=(-0.07, 0.07), xlabel='X', ylabel='Y', zlabel='Z')
+        ax.set_xlabel(r'$\beta_0$')
+        ax.set_ylabel(r'$\beta_1$')
+        ax.set_zlabel('PDF')
+
+    fig.suptitle("3D-Density-Plot " + "Marginal " if plot_marginal else "" + title)
+    plt.tight_layout()
+
+    plt.savefig("./figures/3D-Density-Plot-" + "Marginal " if plot_marginal else "" + title + ".pdf")
+    plt.show()
+    plt.close()

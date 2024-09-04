@@ -26,7 +26,40 @@ def select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device):
 
 def woodbury_matrix_conversion(A, U, C, V, device):
     # (A + UCV)^-1 = A^-1 - A^-1U(C^-1 + VA^-1U)^-1 VA^-1
-    A_1 = torch.inverse(A)
-    C_1 = torch.inverse(C)
+
+    A_inv = torch.inverse(A)
+    C_inv = torch.inverse(C)
     m = torch.matmul
-    return A_1 - m(m(m(m(A_1, U), torch.inverse(C_1 + m(m(V, A_1), U))), V), A_1)
+    return A_inv - m(m(m(m(A_inv, U), torch.inverse(C_inv + m(m(V, A_inv), U))), V), A_inv)
+
+
+def new_woodbury_identity(P, A, U, C, V, Q, device):
+    # P(A + UCV)^-1Q    = PA^-1Q - PA^-1U(C^-1 + VA^-1U)^-1 VA^-1Q
+    #                   = P(A^-1Q) - P(A^-1U)((C^-1 + V(A^-1U))^-1 V)(A^-1Q)
+    # X = L^-1 M ==> LX = M
+    A_inv_Q = torch.linalg.solve(A, Q).to(device)
+    A_inv_U = torch.linalg.solve(A, U).to(device)
+    C_inv = torch.inverse(C).to(device)
+
+    m = torch.matmul
+    term_1 = m(P, A_inv_Q)
+    term_2 = m(P, A_inv_U)
+    term_3 = torch.linalg.solve(C_inv + m(V, A_inv_U), V).to(device)
+    term_4 = A_inv_Q
+    result = term_1 - m(m(term_2, term_3), term_4)
+    return result
+
+
+def woodbury_identity_special(A, U, C, V, Q, device):
+    # (A + UCV)^-1Q    = A^-1Q - A^-1U(C^-1 + VA^-1U)^-1 VA^-1Q
+    #                   = (A^-1Q) - (A^-1U)((C^-1 + V(A^-1U))^-1 V)(A^-1Q)
+    # X = L^-1 M ==> LX = M
+    A_inv_Q = torch.linalg.solve(A, Q).to(device)
+    A_inv_U = torch.linalg.solve(A, U).to(device)
+    C_inv = torch.inverse(C).to(device)
+
+    m = torch.matmul
+    term_1 = torch.linalg.solve(C_inv + m(V, A_inv_U), V).to(device)
+    result = A_inv_Q - m(m(A_inv_U, term_1), A_inv_Q)
+    return result
+

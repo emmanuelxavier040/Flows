@@ -57,9 +57,14 @@ def log_posterior_unnormalized(constants, Λ, grouped_indices_list, tau_samples,
     term_3 = -0.5 * torch.linalg.slogdet(A)[1]
     log_posterior = log_posterior + term_3
 
-    # A_inverse = torch.inverse(A)
-    A_inverse = Utilities.woodbury_matrix_conversion(taus_diagonal_matrices, X.T, Λ, X, device)
-    term_4 = 0.5 * torch.matmul(torch.matmul(c_4_JT, A_inverse), c_4_JT.T)
+    ## A_inverse = torch.inverse(A)
+    # A_inverse = Utilities.woodbury_matrix_conversion(taus_diagonal_matrices, X.T, Λ, X, device)
+    # term_4 = 0.5 * torch.matmul(torch.matmul(c_4_JT, A_inverse), c_4_JT.T)
+    #
+    m = torch.matmul
+    inv = Utilities.new_woodbury_identity(X, taus_diagonal_matrices, X.T, Λ, X, X.T, device)
+    term_4 = 0.5 * m(m(m(m(Y.T, Λ), inv), Λ), Y).to(device)
+
     log_posterior = log_posterior + term_4
 
     n_features = len(X[0])
@@ -253,7 +258,7 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
 
     non_zero_indices = np.random.choice(n_features, n_non_zero, replace=False)
     coefficients = np.zeros(n_features)
-    coefficients[non_zero_indices] = np.random.normal(1, 5, n_non_zero)
+    coefficients[non_zero_indices] = np.random.normal(0, 1, n_non_zero)
 
     scale_matrix = np.eye(n_features)
     covariance = sp.stats.wishart(df=n_features, scale=scale_matrix).rvs(1)
@@ -415,9 +420,7 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, grouped_indices_list, ep
                                                      context_size, lambda_min_exp, lambda_max_exp,
                                                      learning_rate)
 
-    # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     # View.plot_loss(losses)
-    # solution_type = "No_Beta_Group-Lasso-Solution Path"
     solution_type = "No_Beta_Group-Lasso-MAP"
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_from_flow_for_plots(flows, grouped_indices_list,
                                                                                  X_torch, Y_torch,
@@ -445,19 +448,25 @@ def calculate_beta_distribution_by_plugging_in_taus_in_main_equation(likelihood_
     likelihood_cov_matrix = (likelihood_sigma ** 2) * torch.eye(X_train.shape[0]).to(device)
     Λ = torch.inverse(likelihood_cov_matrix).to(device)
     XTΛX = torch.matmul(torch.matmul(X_train.T, Λ), X_train).to(device)
-    cov2 = XTΛX + taus_diagonal_matrix
+    cov_beta_dist = XTΛX + taus_diagonal_matrix
     m = torch.matmul
-    cov2_1 = Utilities.woodbury_matrix_conversion(taus_diagonal_matrix, X_train.t(), Λ, X_train, device)
-    mean2 = m(m(m(cov2_1, X_train.t()), Λ.t()), Y_train)
-    return mean2, cov2
+
+    # cov2_1 = Utilities.woodbury_matrix_conversion(taus_diagonal_matrix, X_train.t(), Λ, X_train, device)
+    # mean_beta_dist = m(m(m(cov2_1, X_train.t()), Λ.t()), Y_train)
+
+    inv_XT = Utilities.woodbury_identity_special(taus_diagonal_matrix, X_train.T, Λ, X_train, X_train.T, device)
+    mean_beta_dist = m(m(inv_XT, Λ.t()), Y_train)
+    return mean_beta_dist, cov_beta_dist
 
 
 def experiment_compare_betas_from_group_lasso_for_a_lambda(dimension, X_train, Y_train, likelihood_sigma, beta_flows, tau_flows,
                                                            grouped_indices_list, lambda_max_likelihood):
     context_size = 1
+    num_samples = 100
+    # num_samples = 1000
     uniform_lambdas = torch.rand(context_size).to(device)
     context = (uniform_lambdas * (lambda_max_likelihood - lambda_max_likelihood) + lambda_max_likelihood).view(-1, 1)
-    tau_samples, tau_log_prob = tau_flows.sample_and_log_prob(num_samples=1000, context=context)
+    tau_samples, tau_log_prob = tau_flows.sample_and_log_prob(num_samples=num_samples, context=context)
 
     taus_diagonal_matrices = generate_tau_diagonal_matrices(tau_samples, grouped_indices_list)
 
@@ -489,77 +498,101 @@ def experiment_compare_beta_path_from_taus_with_beta_path_group_lasso_for_lambda
                                                                                        tau_flows,
                                                                                        grouped_indices_list,
                                                                                        lambda_min_exp,
-                                                                                       lambda_max_exp, context_size):
-    uniform_lambdas = torch.rand(context_size).to(device)
-    context = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
-    tau_samples, tau_log_prob = tau_flows.sample_and_log_prob(num_samples=100, context=context)
+                                                                                       lambda_max_exp, context_size,
+                                                                                       num_samples,
+                                                                                       text=""):
+    from torch.cuda.amp import autocast
+    with torch.no_grad():
+        with autocast():
+            lambdas, tau_beta_samples_list, beta_samples_list = [], [], []
+            for iter in range(200):
+                print(iter)
+                uniform_lambdas = torch.rand(context_size).to(device)
+                context = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
+                tau_samples, tau_log_prob = tau_flows.sample_and_log_prob(num_samples=num_samples, context=context)
 
-    taus_diagonal_matrices_context = generate_tau_diagonal_matrices(tau_samples, grouped_indices_list)
+                max_index = max(max(sublist) for sublist in grouped_indices_list) + 1
+                repeat_counts = torch.tensor([len(sublist) for sublist in grouped_indices_list]).to(device)
+                values_repeated = tau_samples.repeat_interleave(repeat_counts, dim=-1)
+                flat_indices = [idx for sublist in grouped_indices_list for idx in sublist]
+                flat_indices_tensor = torch.tensor(flat_indices).to(device)
+                batch_size, depth, _ = tau_samples.shape
+                list_tensors = torch.zeros((batch_size, depth, max_index)).to(device)
+                list_tensors[:, :, flat_indices_tensor] = values_repeated.to(device)
 
-    mean2, cov2 = calculate_beta_distribution_by_plugging_in_taus_in_main_equation(likelihood_sigma,
-                                                                                   X_train, Y_train,
-                                                                                   taus_diagonal_matrices_context)
-    tau_beta_samples = mean2
+                # batch_size = 10  # Adjust batch size as needed
+                # diagonal_matrices = []
+                # for i in range(0, len(list_tensors), batch_size):
+                #     batch = list_tensors[i:i + batch_size]
+                #     diagonal_batch = torch.diag_embed(batch)
+                #     diagonal_matrices.append(diagonal_batch)
+                # taus_diagonal_matrices_context = torch.cat(diagonal_matrices, dim=0)
 
-    beta_samples, beta_log_prob = beta_flows.sample_and_log_prob(num_samples=100, context=context)
-    # beta_samples = beta_samples.mean(dim=1)
+                # taus_diagonal_matrices = []
+                # batch_size_outer = 1
+                # batch_size_inner = 1
+                # for i in range(0, len(list_tensors), batch_size_outer):
+                #     context_diagonal_matrix = None
+                #     # diagonal_matrices = []
+                #     batch_outer = list_tensors[i:i + batch_size_outer]
+                #     for j in range(0, batch_outer.shape[1], batch_size_inner):
+                #         print("At outer inner batch ", i, j)
+                #         batch_inner = batch_outer[:, j:j + batch_size_inner, :]
+                #         # print(batch_outer.shape, batch_inner.shape)
+                #         diagonal_batch = torch.diag_embed(batch_inner)
+                #         # diagonal_matrices.append(diagonal_batch)
+                #         if context_diagonal_matrix is None:
+                #             context_diagonal_matrix = diagonal_batch
+                #         else:
+                #             context_diagonal_matrix = torch.cat((context_diagonal_matrix, diagonal_batch), dim=0)
+                #
+                #     taus_diagonal_matrices.append(context_diagonal_matrix)
+                # taus_diagonal_matrices_context = torch.cat(taus_diagonal_matrices, dim=0)
 
-    lambdas, tau_beta_samples_list, beta_samples_list = [], [], []
-    lambdas.append((10 ** context).squeeze().cpu().detach().numpy())
-    tau_beta_samples_list.append(tau_beta_samples.cpu().detach().numpy())
-    beta_samples_list.append(beta_samples.cpu().detach().numpy())
-    lambdas, tau_beta_samples_list, beta_samples_list = (np.concatenate(lambdas, 0),
-                                                         np.concatenate(tau_beta_samples_list, 0),
-                                                         np.concatenate(beta_samples_list, 0))
+                taus_diagonal_matrices_context = generate_tau_diagonal_matrices(tau_samples, grouped_indices_list)
 
-    lambda_sort_order = lambdas.argsort()
-    lambdas_sorted = lambdas[lambda_sort_order]
-    tau_beta_samples_sorted = tau_beta_samples_list[lambda_sort_order]
-    beta_samples_sorted = beta_samples_list[lambda_sort_order]
+                mean_beta_dist, cov_beta_dist = calculate_beta_distribution_by_plugging_in_taus_in_main_equation(likelihood_sigma,
+                                                                                               X_train, Y_train,
+                                                                                               taus_diagonal_matrices_context)
+                tau_beta_samples = mean_beta_dist
+                beta_samples, beta_log_prob = beta_flows.sample_and_log_prob(num_samples=num_samples, context=context)
 
-    beta_group_map = {}
-    for group_index, group in enumerate(grouped_indices_list):
-        for beta_index in group:
-            beta_group_map[beta_index] = group_index
+                lambdas.append((10 ** context).squeeze().cpu().detach().numpy())
+                tau_beta_samples_list.append(tau_beta_samples.cpu().detach().numpy())
+                beta_samples_list.append(beta_samples.cpu().detach().numpy())
 
-    # title = 'Recovered Path of Betas from Taus and Solution path of Betas from Standard Flows Vs Lambda'
-    # View.plot_flow_path_vs_ground_truth(lambdas_sorted, beta_samples_sorted.T, lambdas_sorted, tau_beta_samples_sorted,
-    #                                     title, beta_group_map,
-    #                                     True, show_legend=False)
+            lambdas, tau_beta_samples_list, beta_samples_list = (np.concatenate(lambdas, 0),
+                                                                     np.concatenate(tau_beta_samples_list, 0),
+                                                                     np.concatenate(beta_samples_list, 0))
+            lambda_sort_order = lambdas.argsort()
+            lambdas_sorted = lambdas[lambda_sort_order]
+            tau_beta_samples_sorted = tau_beta_samples_list[lambda_sort_order]
+            beta_samples_sorted = beta_samples_list[lambda_sort_order]
 
-    # title = 'Standardized Coefficients of Recovered Betas from Taus and Betas from Standard Flows'
-    # View.plot_flow_path_vs_ground_truth_standardized_coefficients(tau_beta_samples_sorted, beta_samples_sorted, title,
-    #                                                               beta_group_map,
-    #                                                               True)
-    # View.plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X_train.detach().cpu().numpy(),
-    #                                                                           Y_train.detach().cpu().numpy(),
-    #                                                                           grouped_indices_list,
-    #                                                                           lambdas_sorted, tau_beta_samples_sorted,
-    #                                                                           "Betas-from-Taus")
-
-    list_samples_sorted = [tau_beta_samples_sorted, beta_samples_sorted]
-    title = "Standardized Coefficients - Betas-from-Taus Vs Betas-from-flows Vs Ground Truth"
-    View.plot_recovered_betas_vs_ground_truth_standardized_coefficients(X_train.detach().cpu().numpy(),
-                                                                        Y_train.detach().cpu().numpy(),
-                                                                        grouped_indices_list, lambdas_sorted,
-                                                                        list_samples_sorted, title)
-
+            list_samples_sorted = [tau_beta_samples_sorted, beta_samples_sorted]
+            title = "Standardized Coefficients - Betas-from-Taus Vs Betas-from-flows Vs Ground Truth -"+text
+            View.plot_recovered_betas_vs_ground_truth_standardized_coefficients(X_train.detach().cpu().numpy(),
+                                                                                Y_train.detach().cpu().numpy(),
+                                                                                grouped_indices_list, lambdas_sorted,
+                                                                                list_samples_sorted, title)
 
 def main():
     # Set the parameters
     epochs = 500
-    dimension = 6
-    group_size = 3
+    dimension = 300
+    group_size = 30
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
     zero_weight_group_index = 2
-    data_sample_size = 20
+    data_sample_size = 50
     data_noise_sigma = 2.0
     likelihood_sigma = 2
     tau_sample_size = 1
-    context_size = 100
-    lambda_min_exp = -3
-    lambda_max_exp = 8
+    context_size = 1000
+    lambda_min_exp = -2
+    lambda_max_exp = 4
     learning_rate = 1e-3
+    plot_sample_context_size = 10      # Increase to 1000 for lower dimensions
+    plot_num_samples = 100               # Increase to 100 for lower dimensions
 
     print(f"============= Parameters ============= \n"
           f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
@@ -589,13 +622,15 @@ def main():
     # experiment_compare_betas_from_group_lasso_for_a_lambda(dimension, X_torch, Y_torch, likelihood_sigma,
     #                                           beta_flows, tau_flows, grouped_indices_list, lambda_max_likelihood)
 
-    context_size = 1000     # Reduce to 100 for higher dimensions
+
     experiment_compare_beta_path_from_taus_with_beta_path_group_lasso_for_lambda_range(dimension, X_torch, Y_torch,
                                                                                        likelihood_sigma, beta_flows,
                                                                                        tau_flows,
                                                                                        grouped_indices_list,
                                                                                        lambda_min_exp,
-                                                                                       lambda_max_exp, context_size)
+                                                                                       lambda_max_exp,
+                                                                                       plot_sample_context_size,
+                                                                                       plot_num_samples)
 
 
 if __name__ == "__main__":
