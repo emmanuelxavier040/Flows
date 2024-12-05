@@ -160,8 +160,8 @@ def compute_posterior_predictive_t_distribution_parameters(X_train, y_train, X_p
 
 
 def posterior( X_train, Y_train, W, dimension):
-    num_iter = 2000
-    q_sample_size = 100
+    num_iter = 4000
+    q_sample_size = 1000
     N = len(X_train)
     flows = build_flow_model(dimension)
     a_0 = torch.tensor(N)
@@ -172,10 +172,15 @@ def posterior( X_train, Y_train, W, dimension):
     q_samples = flows.sample(10000)
     fixed = W.tolist()
     sample_mean = torch.mean(q_samples, dim=0).tolist()
+    sample_var = (torch.std(q_samples, dim=0)**2).tolist()
     for i in range(dimension):
         print(f"Index {i}: {fixed[i]} Student-t W: {sample_mean[i]}")
 
     mean, scale_matrix, df = compute_posterior_t_distribution_parameters(X_train, Y_train, a_0, b_0)
+
+    content = {"Flow sample mean": sample_mean, "flow sample var": sample_var, "analytical mean": mean, "analytical cov": scale_matrix}
+    Utilities.save_text_file("ridge_regression_with_inverse_gamma.txt", str(content))
+
     View.plot_analytical_flow_posterior_t_distribution_on_grid(dimension, mean, scale_matrix, df, flows)
 
 

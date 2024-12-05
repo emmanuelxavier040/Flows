@@ -21,18 +21,19 @@ from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.transforms.conditional import ConditionalShiftTransform, ConditionalScaleTransform, ConditionalLUTransform, \
     ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
-from sklearn.linear_model import LinearRegression
 
 from torch import optim
 
 import Evaluation
 import Utilities
 import Visualizations as View
+import LassoRegressionCNF
 
-torch.manual_seed(11)
-np.random.seed(10)
-# torch.manual_seed(15)
-# np.random.seed(17)
+
+# torch.manual_seed(11)
+# np.random.seed(10)
+torch.manual_seed(15)
+np.random.seed(17)
 device = "cuda:0" if torch.cuda.is_available() else 'cpu'
 print("Device used : ", device)
 
@@ -101,7 +102,7 @@ def train_for_fixed_lambda(flows, d, X, Y, variance, epochs, n, fixed_lambda_exp
     return flows, losses
 
 
-def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, context_size=100,
+def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, plot_parameter_space=False, context_size=100,
               lambda_min_exp=-1, lambda_max_exp=2, lr=1e-3):
     print("Starting training the flows")
     file_name = f'CNF_d{d}_n{n}_e{epochs}_lmin{lambda_min_exp}_lmax{lambda_max_exp}'
@@ -110,7 +111,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
     losses = []
-    lambda_max_likelihood = -math.inf
+    lambda_max_marg_likelihood = -math.inf
 
     T0 = 5.0
     Tn = 0.01
@@ -125,6 +126,8 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
         else:
             return Tn
 
+    lambdas_exp_plot = torch.linspace(lambda_min_exp, lambda_max_exp, 20)
+
     try:
         for epoch in range(epochs):
             t = epoch // (epochs / cool_num_iter)
@@ -136,11 +139,43 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
             context = lambdas_exp
             q_samples, q_log_prob = flows.sample_and_log_prob(num_samples=n, context=context)
             log_p = vectorized_log_posterior_unnormalized(q_samples, d, X_torch, Y_torch, lambdas_exp, likelihood_sigma)
+
+            from scipy.special import gamma
+
+            def beta_pdf_manual(x, alpha, beta):
+
+                if x <= 0 or x >= 1:
+                    return 0
+                B_ab = (gamma(alpha) * gamma(beta)) / gamma(alpha + beta)
+                return (x ** (alpha - 1) * (1 - x) ** (beta - 1)) / B_ab
+
+            def beta_mixture_pdf_manual(q_samples, weights, alpha_params, beta_params):
+                # pdf = 0
+                pdf = torch.zeros(q_samples.shape[0], q_samples.shape[1], 1)
+                pdf_exp = torch.full_like(q_samples, 0)
+                for weight, alpha, beta_param in zip(weights, alpha_params, beta_params):
+                    cond = (q_samples > 0) & (q_samples < 1)
+                    pdf_exp[~cond] = 0
+                    B_ab = (gamma(alpha) * gamma(beta_param)) / gamma(alpha + beta_param)
+                    pdf_exp[cond] = (q_samples[cond] ** (alpha - 1) * (1 - q_samples[cond]) ** (beta_param - 1)) / B_ab
+                    pdf += weight * torch.prod(pdf_exp, dim=2, keepdim=True)
+                return pdf.squeeze(1)
+
+            weights = [0.25, 0.25, 0.25, 0.25]  # Mixing coefficients, must sum to 1
+            alpha_params = [2, 5, 18, 15]  # Alpha parameters for the 4 Beta distributions
+            beta_params = [8, 3, 12, 5]  # Beta parameters for the 4 Beta distributions
+            log_p = beta_mixture_pdf_manual(q_samples,  weights, alpha_params, beta_params)
+            # log_p = np.array([beta_mixture_pdf_manual(q_samples, x_val, y_val, weights, alpha_params, beta_params) for x_val, y_val in
+            #               zip(np.ravel(X), np.ravel(Y))])
+
             loss = torch.mean(q_log_prob - (log_p / T))
             loss.backward()
 
-            if epoch % 50 == 0:
-                View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="During training epoch-" + str(epoch))
+            if plot_parameter_space and (epoch < 10 or (epoch % 10 == 0)):
+                View.plot_parameter_space_3d_wth_gt(device, flows, lambdas_exp_plot[10], X_torch, Y_torch,
+                                                    likelihood_sigma, title="")
+                # for lamda in lambdas_exp_plot:
+                #     View.plot_parameter_space_3d(device, flows, lamda, plot_marginal=False, title="During training epoch-" + str(epoch))
 
             if epoch % 10 == 0 or epoch + 1 == epochs:
                 if epoch % cool_step_iteration == 0:
@@ -157,16 +192,18 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-                View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="Posterior")
+                if plot_parameter_space:
+                    for lamda in lambdas_exp_plot:
+                        View.plot_parameter_space_3d(device, flows, lamda, plot_marginal=False, title="Posterior")
 
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                                      likelihood_sigma, 200, 100,
+                                                                                      likelihood_sigma, 200, 10000,
                                                                                       lambda_min_exp, lambda_max_exp)
                 solution_type = "Solution Path"
                 View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambdas_sorted, q_samples_sorted, 1, solution_type)
 
-                log_likelihood_means = np.mean(-losses_sorted, axis=1)
-                lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+                log_marg_likelihood_means = np.mean(-losses_sorted, axis=1)
+                lambda_max_marg_likelihood = lambdas_sorted[np.argmax(log_marg_likelihood_means)]
 
                 title = "Ridge-Regression-with-CNF_at_T1"
                 View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
@@ -177,7 +214,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
 
     # save_model(flows, file_name)
 
-    return flows, losses, lambda_max_likelihood
+    return flows, losses, lambda_max_marg_likelihood
 
 
 def load_model(dimensions, model_path):
@@ -206,14 +243,17 @@ def generate_synthetic_data(d, l, n, noise):
     # W = torch.rand(d) * 20 - 10
     W = torch.randn(d)
 
-    min_val = torch.min(W)
-    max_val = torch.max(W)
-    W = -1 + 2 * (W - min_val) / (max_val - min_val)
+    # min_val = torch.min(W)
+    # max_val = torch.max(W)
+    # W = -1 + 2 * (W - min_val) / (max_val - min_val)
 
     print(W)
     # W = torch.tensor([1.5, 2.4, 0.3, 0.7])
     if l < d:
         W[-l:] = 0
+
+    Utilities.save_text_file("original_parameter.txt", str(W))
+
     v = torch.tensor(noise ** 2)
     delta = torch.randn(num_data_samples) * v
     # delta = torch.normal(0, noise ** 2, num_data_samples)
@@ -234,13 +274,6 @@ def generate_regression_dataset(n_samples, n_features, n_non_zero, noise_std):
     X = np.random.multivariate_normal(mean=np.zeros(n_features), cov=covariance, size=n_samples)
     y = np.dot(X, coefficients) + np.random.normal(0, noise_std ** 2,
                                                    n_samples)
-
-    reg = LinearRegression().fit(X, y)
-    r2_score = reg.score(X, y)
-    print(f"R^2 score: {r2_score:.4f}")
-    sigma_regr = np.sqrt(np.mean(np.square(y - X @ reg.coef_)))
-    print(f"Sigma regression: {sigma_regr:.4f}")
-    print(f"Norm coefficients: {np.linalg.norm(reg.coef_):.4f}")
 
     return torch.from_numpy(X).float(), torch.from_numpy(y).float(), torch.from_numpy(coefficients).float()
 
@@ -273,11 +306,20 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
     base_dist = StandardNormal(shape=[d])
     transforms = []
     num_layers = 3
+
+    context_features = 16
+    hidden_features = 64
+    num_layers = 3
+
+    context_features = 32
+    hidden_features = 128
+    num_layers = 10
+
     for _ in range(num_layers):
         transforms.append(
             InverseTransform(
                 ConditionalSumOfSigmoidsTransform(
-                    features=d, hidden_features=64,
+                    features=d, hidden_features=hidden_features,
                     context_features=context_features, num_blocks=5, n_sigmoids=30)
             )
         )
@@ -289,37 +331,8 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
 
     transforms = transforms[::-1]
     transform = CompositeTransform(transforms)
-    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=64,
+    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=hidden_features,
                                 num_blocks=3, activation=torch.nn.functional.relu)
-    model = Flow(transform, base_dist, embedding_net=embedding_net)
-    return model
-
-
-def build_masked_sigmoid_conditional_flow_model(d):
-    context_features = 16
-    print("Defining the flows")
-
-    base_dist = StandardNormal(shape=[d])
-    transforms = []
-    num_layers = 5
-    for _ in range(num_layers):
-        transforms.append(
-            InverseTransform(
-                MaskedSumOfSigmoidsTransform(
-                    features=d, hidden_features=64,
-                    context_features=context_features, num_blocks=5, n_sigmoids=30)
-            )
-        )
-        transforms.append(
-            InverseTransform(
-                ActNorm(features=d)
-            )
-        )
-
-    transforms = transforms[::-1]
-    transform = CompositeTransform(transforms)
-    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=64,
-                                num_blocks=5, activation=torch.nn.functional.relu)
     model = Flow(transform, base_dist, embedding_net=embedding_net)
     return model
 
@@ -388,7 +401,7 @@ def sample_Ws_for_plots(flows, X, Y, likelihood_sigma, context_size, flow_sample
 
 
 def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
-              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
+              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, plot_parameter_space, W):
     original_W = W.tolist()
     print("Original Parameters: ", original_W)
     fixed_lambda_exp = torch.rand(1)
@@ -399,19 +412,20 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
 
     flows = build_sum_of_sigmoid_conditional_flow_model(dimension)
     flows.to(device)
-    View.plot_parameter_space_3d(device, flows, plot_marginal=True, title="Before Training")
+    # if plot_parameter_space:
+    #     View.plot_parameter_space_3d(device, flows, torch.tensor(0.0), plot_marginal=True, title="Before Training")
+    #     View.plot_parameter_space_3d(device, flows, torch.tensor(0.0), plot_marginal=False, title="Before Training")
 
     flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, X, Y, X_torch, Y_torch,
                                                      likelihood_sigma, epochs,
-                                                     q_sample_size,
+                                                     q_sample_size, plot_parameter_space,
                                                      context_size, lambda_min_exp, lambda_max_exp,
-                                                     learning_rate)
-    View.plot_parameter_space_3d(device, flows, plot_marginal=False, title="MAP")
+                                                     learning_rate, )
 
     solution_type = "MAP Solution Path with Simulated Annealing"
     print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                          likelihood_sigma, 200, 100,
+                                                                          likelihood_sigma, 200, 10000,
                                                                           lambda_min_exp, lambda_max_exp)
     View.plot_flow_ridge_path_vs_ground_truth(X, Y, lambdas_sorted, q_samples_sorted, 1, solution_type)
 
@@ -423,44 +437,61 @@ def posterior(dimension, X, Y, X_torch, Y_torch, likelihood_sigma, epochs,
 
 def main():
     # Set the parameters
-    epochs = 1000
+    epochs = 20000
     dimension = 5
-    data_sample_size = 7
+    data_sample_size = 56
 
-    dimension = 3
-    data_sample_size = 200
+    # Configuration for plotting 3D plots of Posterior
+    dimension = 2
+    data_sample_size = 50
 
-    data_noise_sigma = 1.0
+    data_noise_sigma = 0.1
     likelihood_sigma = 2
     q_sample_size = 1
-    context_size = 1000
-    lambda_min_exp = -3
-    lambda_max_exp = 4
+    context_size = 2
+    lambda_min_exp = -4
+    lambda_max_exp = 5
     learning_rate = 1e-3
+    plot_parameter_space = True    # Set to true to save 3D plots in between training
 
     print(f"============= Parameters ============= \n"
           f"Epochs:{epochs}, Dimension:{dimension}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
-    # X, Y, W, variance = generate_synthetic_data(dimension, last_zero_indices, data_sample_size, noise)
-
-    X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
+    X, Y, W, variance = generate_synthetic_data(dimension, dimension, data_sample_size, data_noise_sigma)
+    #
+    # X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)
     X = (X - X.mean(0)) / X.std(0)
 
-    train_ratio = 0.2
+    train_ratio = 0.8
     X_train, Y_train, X_test, Y_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Y)
 
     X_torch = X_train.to(device)
     Y_torch = Y_train.to(device)
     X_test, Y_test = X_test.to(device), Y_test.to(device)
 
-    flows, lambda_max_likelihood = posterior(dimension, X_train, Y_train, X_torch, Y_torch, likelihood_sigma, epochs,
-              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, W)
+    flows, lambda_max_marg_likelihood = posterior(dimension, X_train, Y_train, X_torch, Y_torch, likelihood_sigma, epochs,
+              q_sample_size, context_size, lambda_min_exp, lambda_max_exp, learning_rate, plot_parameter_space, W)
 
-    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_marg_likelihood, flows, device)
+
+    Utilities.save_text_file("best_parameter_Ridge.txt", str(q_selected))
 
     Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Ridge-Regression-CNf-Training-data")
     Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Ridge-Regression-CNf-Test-data")
+
+
+    flows, lambda_max_marg_likelihood = LassoRegressionCNF.posterior(X_train, Y_train, X_torch, Y_torch, likelihood_sigma,
+                                                                epochs,
+                                                                q_sample_size, context_size, lambda_min_exp,
+                                                                lambda_max_exp,
+                                                                learning_rate, W)
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_marg_likelihood, flows, device)
+
+    Utilities.save_text_file("best_parameter_Lasso.txt", str(q_selected))
+
+    Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Lasso-Regression-CNf-Training-data")
+    Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Lasso-Regression-CNf-Test-data")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ def evaluate_model(flows, q_selected, X_test, Y_test, type):
     print("RMSE : ", rmse)
     print("MAE : ", mae)
     print("R2 : ", r2)
+    save_evaluation(mse, rmse, mae, r2, q_selected, type)
 
     title = "Residuals - " + type
     View.plot_residuals(y_test_np, y_pred_np, title)
@@ -40,6 +41,19 @@ def evaluate_poisson_model(flows, q_selected, X_test, Z_test, type):
     print("RMSE : ", rmse)
     print("MAE : ", mae)
     print("R2 : ", r2)
+    save_evaluation(mse, rmse, mae, r2, q_selected, type)
 
     title = "Residuals - " + type
     View.plot_residuals(z_test_np, z_pred_np, title)
+
+
+def save_evaluation(mse, rmse, mae, r2, q_selected, title):
+    f = open(f"./figures/Evaluation_{title}.txt", "a")
+    f.write(f"====================================================\n")
+    f.write(f"MSE :  {mse}\n")
+    f.write(f"RMSE :  {rmse}\n")
+    f.write(f"MAE :  {mae}\n")
+    f.write(f"R2 :  {r2}\n")
+    f.write(f"Parameter selected :  {q_selected}\n")
+    f.write(f"====================================================\n")
+    f.close()

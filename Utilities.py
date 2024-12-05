@@ -1,5 +1,24 @@
 import numpy as np
 import torch
+import os
+import shutil
+
+
+def save_text_file(filename, content):
+    f = open(f"./figures/{filename}", "a")
+    f.write(content)
+    f.close()
+
+
+def create_directory(destination_directory):
+    if not os.path.exists(destination_directory):
+        os.mkdir(destination_directory)
+
+
+def move_all_files_in_source_to_dest_directory(source_directory, destination_directory):
+    files = [f for f in os.listdir(source_directory) if os.path.isfile(os.path.join(source_directory, f))]
+    for file in files:
+        shutil.move(os.path.join(source_directory, file), destination_directory)
 
 
 def extract_train_test_data(data_sample_size, train_ratio, X_full, Y_full):
@@ -7,7 +26,7 @@ def extract_train_test_data(data_sample_size, train_ratio, X_full, Y_full):
     num_test = data_sample_size - num_train
     indices = torch.randperm(data_sample_size)
     train_indices = indices[:num_train]
-    test_indices = indices[num_test:]
+    test_indices = indices[:num_test]
     X_train, Y_train = X_full[train_indices], Y_full[train_indices]
     X_test, Y_test = X_full[test_indices], Y_full[test_indices]
     return X_train, Y_train, X_test, Y_test
@@ -42,9 +61,9 @@ def new_woodbury_identity(P, A, U, C, V, Q, device):
     C_inv = torch.inverse(C).to(device)
 
     m = torch.matmul
-    term_1 = m(P, A_inv_Q)
-    term_2 = m(P, A_inv_U)
-    term_3 = torch.linalg.solve(C_inv + m(V, A_inv_U), V).to(device)
+    term_1 = m(P.to(device), A_inv_Q)
+    term_2 = m(P.to(device), A_inv_U)
+    term_3 = torch.linalg.solve(C_inv + m(V.to(device), A_inv_U), V.to(device)).to(device)
     term_4 = A_inv_Q
     result = term_1 - m(m(term_2, term_3), term_4)
     return result
@@ -60,6 +79,9 @@ def woodbury_identity_special(A, U, C, V, Q, device):
 
     m = torch.matmul
     term_1 = torch.linalg.solve(C_inv + m(V, A_inv_U), V).to(device)
-    result = A_inv_Q - m(m(A_inv_U, term_1), A_inv_Q)
+    t2 = m(A_inv_U, term_1)
+    t3 = m(t2, A_inv_Q)
+    result = A_inv_Q - t3
+    # result = A_inv_Q - m(m(A_inv_U, term_1), A_inv_Q)
     return result
 

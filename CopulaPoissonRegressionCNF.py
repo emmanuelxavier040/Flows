@@ -5,7 +5,7 @@ import torch
 import scipy as sp
 
 import Utilities
-import GroupPoissonRegressionCNF_withoutBetas
+import GroupPoissonRegressionCNF_withoutBetas_joint
 import Visualizations as View
 
 torch.manual_seed(11)
@@ -177,7 +177,7 @@ def main():
     X_torch = X_train.to(device)
     Z_torch = Z_train.to(device)
 
-    flows, lambda_max_likelihood = GroupPoissonRegressionCNF_withoutBetas.posterior(X_train, Z_train, X_torch, Z_torch,
+    flows, lambda_max_likelihood = GroupPoissonRegressionCNF_withoutBetas_joint.posterior(X_train, Z_train, X_torch, Z_torch,
                                                                                     likelihood_sigma,
                                                                                     grouped_indices_list, epochs,
                                                                                     flow_sample_size, context_size,

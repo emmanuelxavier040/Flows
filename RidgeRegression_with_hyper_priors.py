@@ -205,8 +205,8 @@ def compute_posterior_predictive_normal_dist_for_fixed_variance(X_train, y_train
 
 
 def posterior(X_train, Y_train, W, variance):
-    num_iter = 2000
-    q_sample_size = 100
+    num_iter = 4000
+    q_sample_size = 1000
     dimension = X_train[0].shape[0]
     flows = build_flow_model(dimension)
     flows, losses = train_posterior(flows, dimension, X_train, Y_train, variance, num_iter, q_sample_size)
@@ -215,6 +215,7 @@ def posterior(X_train, Y_train, W, variance):
     analytical_mean, analytical_cov = compute_analytical_posterior_for_fixed_variance(X_train, Y_train,
                                                                                       torch.zeros(dimension),
                                                                                       torch.eye(dimension), variance)
+
     View.plot_analytical_flow_posterior_general_with_samples(analytical_mean, analytical_cov, flows)
     View.plot_analytical_flow_distribution_on_grid(dimension, analytical_mean, analytical_cov, flows,
                                                    W, "Normal-Posterior-General")
@@ -223,6 +224,10 @@ def posterior(X_train, Y_train, W, variance):
     fixed = W.tolist()
     q_samples = flows.sample(10000)
     sample_mean = torch.mean(q_samples, dim=0).tolist()
+    sample_var = (torch.std(q_samples, dim=0)**2).tolist()
+    content = {"Flow sample mean": sample_mean, "flow sample var": sample_var, "analytical mean": analytical_mean, "analytical cov": analytical_cov}
+    Utilities.save_text_file("ridge_regression_with_hyper_priors.txt", str(content))
+
     for i in range(dimension):
         print(f"Index {i}: {fixed[i]} Fixed Sigma W: {sample_mean_1[i]} Student-t W: {sample_mean[i]}")
 
@@ -230,8 +235,8 @@ def posterior(X_train, Y_train, W, variance):
 
 
 def posterior_predictive(X_train, Y_train, X_test, Y_test):
-    num_iter = 2000
-    y_sample_size = 100
+    num_iter = 4000
+    y_sample_size = 1000
     num_test = Y_test.shape[0]
     variance = 4
     print("Post. pred. Dimension: ", num_test)

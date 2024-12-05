@@ -10,8 +10,6 @@ import Utilities
 import GroupLassoRegressionCNF_withoutBetas as GL_taus
 import Visualizations as View
 import GroupLassoRegressionCNF
-import pandas as pd
-from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 torch.manual_seed(11)
 np.random.seed(10)
@@ -49,7 +47,8 @@ def generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indi
 
 def generate_synthetic_data_with_entire_group_replication_rest_groups_with_correlated_features(dimension, grouped_indices_list, data_sample_size,
                                                                                                data_noise_sigma, group_noise_sigma, col_replicate, group_replicate,
-                                                                                               zero_group_indices):
+                                                                                               zero_group_indices,
+                                                                                               iter_identifier):
     X = torch.zeros((data_sample_size, dimension))
     W = torch.zeros((1, dimension))
     num_samples = data_sample_size
@@ -57,13 +56,12 @@ def generate_synthetic_data_with_entire_group_replication_rest_groups_with_corre
     group_indices = grouped_indices_list[0]
     g_size = len(group_indices)
     mean = torch.zeros(g_size)
+    scale_matrix = np.eye(g_size)
+    # correlation_value = 0.5
+    # scale_matrix = np.full((g_size, g_size), correlation_value)
+    # np.fill_diagonal(scale_matrix, 1)  # Set the diagonal to 1
 
-    scale_matrix = np.eye(g_size)
-    scale_matrix = np.eye(g_size)
-    np.fill_diagonal(scale_matrix, 1)
     covariance = sp.stats.wishart(df=g_size, scale=scale_matrix).rvs(1)
-
-
     covariance = torch.from_numpy(covariance).float()
     # covariance = torch.eye(g_size)
     # covariance = torch.eye(g_size) + torch.ones((g_size, g_size))
@@ -84,15 +82,19 @@ def generate_synthetic_data_with_entire_group_replication_rest_groups_with_corre
         noise = torch.randn(data_sample_size) * torch.tensor(noise_sigma ** 2)
         X[:, group_indices[col_to_replicate]] = x_samples[:, col_to_replicate] + noise.unsqueeze(-1)
 
+        # Set correlated data to rest of the columns in the data group
         col_rest = np.arange(col_replicate, g_size, dtype=int)
         rest_g_size = len(group_indices[col_rest])
         mean = torch.ones(rest_g_size)
-
+        # cov = torch.ones((rest_g_size, rest_g_size)) + torch.eye(rest_g_size)
+        # cov = torch.eye(rest_g_size)
         scale_matrix = np.eye(rest_g_size)
+        # scale_matrix = np.full((rest_g_size, rest_g_size), correlation_value)
+        # np.fill_diagonal(scale_matrix, 1)
         cov = sp.stats.wishart(df=rest_g_size, scale=scale_matrix).rvs(1)
+
         if rest_g_size == 1:
             cov = np.array([[cov]])
-
         cov = torch.from_numpy(cov).float()
 
         mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
@@ -103,13 +105,16 @@ def generate_synthetic_data_with_entire_group_replication_rest_groups_with_corre
         group_index = i
         g_size = len(grouped_indices_list[group_index])
 
+        # Set correlated data to rest of the groups
         mean = torch.ones(g_size)
-
+        # cov = torch.ones((g_size, g_size)) + torch.eye(g_size)
+        # cov = torch.eye(g_size)
         scale_matrix = np.eye(g_size)
+        # scale_matrix = np.full((g_size, g_size), correlation_value)
+        # np.fill_diagonal(scale_matrix, 1)
         cov = sp.stats.wishart(df=g_size, scale=scale_matrix).rvs(1)
         if g_size == 1:
             cov = np.array([[cov]])
-
         cov = torch.from_numpy(cov).float()
 
         mvn_dist = torch.distributions.MultivariateNormal(mean, cov)
@@ -119,13 +124,13 @@ def generate_synthetic_data_with_entire_group_replication_rest_groups_with_corre
 
     X_centered = X - torch.mean(X, dim=0)
     sample_covariance = torch.matmul(X_centered.T, X_centered) / (X_centered.shape[0] - 1)
-    save_data_matrix(sample_covariance.detach().cpu().numpy(), "Sample_covariance")
+    save_data_matrix(sample_covariance.detach().cpu().numpy(), "Sample_covariance"+iter_identifier)
 
     std_devs = np.sqrt(np.diag(sample_covariance))
     corr_matrix = sample_covariance / np.outer(std_devs, std_devs)
 
-    save_data_matrix(corr_matrix, "correlation")
-    correlation_graph_title = "CGLR_Wishart_replication_data_correlation"
+    save_data_matrix(corr_matrix, "correlation"+iter_identifier)
+    correlation_graph_title = "CGLR__replication_data_correlation"+iter_identifier
     View.plot_correlation_matrix(sample_covariance, correlation_graph_title)
 
     # mean = 0
@@ -137,7 +142,7 @@ def generate_synthetic_data_with_entire_group_replication_rest_groups_with_corre
         W[:, group_indices] = torch.zeros(len(group_indices))
 
 
-    Utilities.save_text_file("original_parameters.txt", str(W))
+    Utilities.save_text_file("original_parameters_"+iter_identifier+".txt", str(W))
 
     v = torch.tensor(data_noise_sigma ** 2)
     delta = torch.randn(data_sample_size) * v
@@ -179,7 +184,8 @@ def nearest_positive_definite(matrix):
 
 
 def generate_synthetic_data_with_custom_covariance_for_group_correlations(dimension, grouped_indices_list, data_sample_size,
-                                                                          data_noise_sigma, group_noise_sigma, col_replicate, group_replicate, zero_group_indices):
+                                                                          data_noise_sigma, group_noise_sigma, col_replicate, group_replicate, zero_group_indices,
+                                                                          iter_identifier):
     group_covariances = []
     for indices in grouped_indices_list:
         d = len(indices)
@@ -237,13 +243,13 @@ def generate_synthetic_data_with_custom_covariance_for_group_correlations(dimens
     np.linalg.eig(cov)
     np.linalg.cholesky(cov)
     print("Good Covariance for Data!!")
-    save_data_matrix(cov)
+    save_data_matrix(cov, "Data covariance"+iter_identifier)
 
     std_devs = np.sqrt(np.diag(full_covariance))
     corr_matrix = full_covariance / np.outer(std_devs, std_devs)
-    save_data_matrix(corr_matrix, "correlation")
+    save_data_matrix(corr_matrix, "correlation"+iter_identifier)
 
-    correlation_graph_title = "GLR_data_correlation"
+    correlation_graph_title = "GLR_data_correlation"+iter_identifier
     View.plot_correlation_matrix(full_covariance, correlation_graph_title)
 
     mean = torch.zeros(dimension)
@@ -258,7 +264,7 @@ def generate_synthetic_data_with_custom_covariance_for_group_correlations(dimens
         group_indices = grouped_indices_list[idx]
         W[group_indices] = torch.zeros(len(group_indices))
 
-    Utilities.save_text_file("original_parameters.txt", str(W))
+    Utilities.save_text_file("original_parameters"+iter_identifier+".txt", str(W))
 
     v = torch.tensor(data_noise_sigma ** 2)
     delta = torch.randn(data_sample_size) * v
@@ -308,19 +314,18 @@ def generate_tau_covariance_matrix(tau_MAP, grouped_indices_list):
 
 def main():
     # Set the parameters
-    epochs = 500
+    epochs = 10000
     dimension = 12
     group_size = 3
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
-    zero_group_indices = [2, 3] #Sparse case
-    # zero_group_indices = [] #Non sparse case
+    zero_group_indices = [2, 3]
     data_sample_size = 120
     data_noise_sigma = 0.1
     likelihood_sigma = 2.0
     flow_sample_size = 1
-    context_size = 10
-    lambda_min_exp = -8
-    lambda_max_exp = 6
+    context_size = 1000
+    lambda_min_exp = -4
+    lambda_max_exp = 5
     learning_rate = 1e-3
     plot_sample_context_size = 10      # Increase to 1000 for lower dimensions
     plot_num_samples = 100               # Increase to 100 for lower dimensions
@@ -342,18 +347,11 @@ def main():
     col_replicate_list = np.arange(1, group_size+1, 1).tolist()
     group_noise_list = np.arange(0.25, 0.75, 0.5)
 
-
+    data_map = {}
     for group_replicate in group_replicate_list:
         for col_replicate in col_replicate_list:
             for group_noise_sigma in group_noise_list:
-                if group_replicate == 0 and col_replicate > 0:
-                    continue
-                iter_identifier = f"epochs{epochs}_d{dimension}_n{data_sample_size}_datanoise{data_noise_sigma}_grpnoise{group_noise_sigma}_gr_repl{group_replicate}_col_repl{col_replicate}"
-
-                # X, Y, W = generate_synthetic_data_with_custom_covariance_for_group_correlations(dimension,
-                # grouped_indices_list, data_sample_size, data_noise_sigma, group_noise_sigma, col_replicate,
-                # group_replicate, zero_group_indices)
-                #
+                iter_identifier = f"_grpnoise{group_noise_sigma}_gr_repl{group_replicate}_col_repl{col_replicate}"
                 X, Y, W = generate_synthetic_data_with_entire_group_replication_rest_groups_with_correlated_features(dimension,
                                                                                                           grouped_indices_list,
                                                                                                           data_sample_size,
@@ -361,28 +359,55 @@ def main():
                                                                                                           group_noise_sigma,
                                                                                                           col_replicate,
                                                                                                           group_replicate,
-                                                                                                          zero_group_indices)
-
+                                                                                                          zero_group_indices,
+                                                                                                          iter_identifier)
 
                 X /= X.std(0)
 
                 train_ratio = 0.8
                 X_train, Y_train, X_test, Y_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Y)
 
-                torch_rng_state = torch.get_rng_state()
-                numpy_rng_state = np.random.get_state()
-                def compute_vif(X_vif, title=""):
-                    vif_data = pd.DataFrame()
-                    vif_data["Feature"] = X_vif.columns
-                    vif_data["VIF"] = [variance_inflation_factor(X_vif.values, i) for i in range(X_vif.shape[1])]
-                    Utilities.save_text_file("VIF_"+title+".txt", str(vif_data))
-                    return vif_data
+                if group_replicate not in data_map:
+                    data_map[group_replicate] = {}
+                if col_replicate not in data_map[group_replicate]:
+                    data_map[group_replicate][col_replicate] = {}
+                data_map[group_replicate][col_replicate][group_noise_sigma] = [X_train, Y_train, X_test, Y_test, W]
 
-                X_vif= pd.DataFrame(X_train.detach().cpu().numpy())
-                vif_data = compute_vif(X_vif, "after standardization")
-                print(vif_data)
-                torch.set_rng_state(torch_rng_state)
-                np.random.set_state(numpy_rng_state)
+
+    destination_directory = f'./figures/Data_'
+    if not os.path.exists(destination_directory):
+        os.mkdir(destination_directory)
+
+    source_directory = "./figures/"
+    files = [f for f in os.listdir(source_directory) if os.path.isfile(os.path.join(source_directory, f))]
+
+    for file in files:
+        shutil.move(os.path.join(source_directory, file), destination_directory)
+
+    for group_replicate in group_replicate_list:
+        for col_replicate in col_replicate_list:
+            for group_noise_sigma in group_noise_list:
+
+                iter_identifier = f"epochs{epochs}_d{dimension}_n{data_sample_size}_datanoise{data_noise_sigma}_grpnoise{group_noise_sigma}_gr_repl{group_replicate}_col_repl{col_replicate}"
+
+                # X, Y, W = generate_synthetic_data_with_custom_covariance_for_group_correlations(dimension,
+                # grouped_indices_list, data_sample_size, data_noise_sigma, group_noise_sigma, col_replicate,
+                # group_replicate, zero_group_indices)
+                #
+                # X, Y, W = generate_synthetic_data_with_entire_group_replication_rest_groups_with_correlated_features(dimension,
+                #                                                                                           grouped_indices_list,
+                #                                                                                           data_sample_size,
+                #                                                                                           data_noise_sigma,
+                #                                                                                           group_noise_sigma,
+                #                                                                                           col_replicate,
+                #                                                                                           group_replicate,
+                #                                                                                           zero_group_indices)
+                X_train, Y_train, X_test, Y_test, W = data_map[group_replicate][col_replicate][group_noise_sigma]
+
+                # X /= X.std(0)
+                #
+                # train_ratio = 0.8
+                # X_train, Y_train, X_test, Y_test = Utilities.extract_train_test_data(data_sample_size, train_ratio, X, Y)
 
                 X_torch = X_train.to(device)
                 Y_torch = Y_train.to(device)
@@ -393,9 +418,6 @@ def main():
                                                                                                 flow_sample_size, context_size,
                                                                                                 lambda_min_exp, lambda_max_exp,
                                                                                                 learning_rate, W)
-                # taugl_q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood_taus, tau_flows,
-                #                                                              device)
-                # Utilities.save_text_file("best_parameter_TauGLasso.txt", str(taugl_q_selected))
                 beta_flows, lambda_max_likelihood_beta = GroupLassoRegressionCNF.posterior(X_train.detach().cpu().numpy(),
                                                                                            Y_train.detach().cpu().numpy(),
                                                                                            X_torch, Y_torch, likelihood_sigma,
@@ -405,7 +427,12 @@ def main():
                                                                                            learning_rate, W)
                 gl_q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood_beta, beta_flows, device)
                 Utilities.save_text_file("best_parameter_GLasso.txt", str(gl_q_selected))
-
+                if dimension < 50:
+                    GL_taus.experiment_compare_betas_from_group_lasso_for_a_lambda(dimension, X_torch, Y_torch,
+                                                                           likelihood_sigma,
+                                                                           beta_flows, tau_flows, grouped_indices_list,
+                                                                           lambda_max_likelihood_taus,
+                                                                           lambda_max_likelihood_beta)
                 GL_taus.experiment_compare_beta_path_from_taus_with_beta_path_group_lasso_for_lambda_range(dimension, X_torch, Y_torch,
                                                                                        likelihood_sigma, beta_flows,
                                                                                        tau_flows,

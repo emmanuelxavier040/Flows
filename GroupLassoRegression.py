@@ -8,8 +8,6 @@ from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.transforms.linear import NaiveLinear, ScalarScale, ScalarShift
 from enflows.transforms import ActNorm
 
-import Visualizations as View
-
 torch.manual_seed(11)
 np.random.seed(10)
 
@@ -160,12 +158,13 @@ def main():
     # q_samples, q_log_prob = flows.sample_and_log_prob(q_sample_size)
     # lambdas_list = torch.ones(q_sample_size)
     # log_p = vectorized_log_posterior_unnormalized(q_samples, dimension, X, Y, lambdas_list, variance)
-    q_samples = flows.sample(100)
+    q_samples = flows.sample(1000)
     sample_mean, sample_std = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples, dim=0).tolist()
     fixed = W.tolist()
 
+    flows = build_flow_model(dimension)
     flows, losses = train_2(flows, dimension, X, Y, indices_list, likelihood_sigma, num_iter, q_sample_size, lamda)
-    q_samples = flows.sample(100)
+    q_samples = flows.sample(1000)
     sample_mean_t_likelihood, sample_std_t_likelihood = torch.mean(q_samples, dim=0).tolist(), torch.std(q_samples,
                                                                                                          dim=0).tolist()
 

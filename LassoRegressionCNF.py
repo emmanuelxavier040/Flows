@@ -16,10 +16,10 @@ import Evaluation
 import Utilities
 import Visualizations as View
 
-torch.manual_seed(11)
-np.random.seed(10)
-# torch.manual_seed(15)
-# np.random.seed(17)
+# torch.manual_seed(11)
+# np.random.seed(10)
+torch.manual_seed(15)
+np.random.seed(17)
 device = "cuda:0" if torch.cuda.is_available() else 'cpu'
 print("Device used : ", device)
 
@@ -49,7 +49,7 @@ def vectorized_log_prior_unnormalized(Ws, d, lambdas_exp, sigma):
 
 def vectorized_standard_laplace_log_prior_unnormalized(Ws, d, lambdas_exp):
     lambdas_list = (10 ** lambdas_exp)
-    term_1 = d * torch.log(lambdas_list / 2.0)
+    term_1 = d * torch.log(lambdas_list / 2)
     term_2 = -lambdas_list * torch.norm(Ws, p=1, dim=-1)
     log_prior = term_1 + term_2
     return log_prior
@@ -112,7 +112,7 @@ def train_CNF(flows, d, X, Y, X_torch, Y_torch, likelihood_sigma, epochs, n, con
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
                 solution_type = "Solution Path"
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                                      likelihood_sigma, 100, 100,
+                                                                                      likelihood_sigma, 200, 100,
                                                                                       lambda_min_exp, lambda_max_exp)
                 View.plot_flow_lasso_path_vs_ground_truth(X, Y, lambdas_sorted,
                                                           q_samples_sorted, likelihood_sigma ** 2, solution_type)
@@ -180,11 +180,20 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
     base_dist = StandardNormal(shape=[d])
     transforms = []
     num_layers = 3
+
+    context_features = 16
+    hidden_features = 64
+    num_layers = 3
+
+    context_features = 32
+    hidden_features = 128
+    num_layers = 10
+
     for _ in range(num_layers):
         transforms.append(
             InverseTransform(
                 ConditionalSumOfSigmoidsTransform(
-                    features=d, hidden_features=64,
+                    features=d, hidden_features=hidden_features,
                     context_features=context_features, num_blocks=5, n_sigmoids=30)
             )
         )
@@ -196,7 +205,7 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
 
     transforms = transforms[::-1]
     transform = CompositeTransform(transforms)
-    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=64,
+    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=hidden_features,
                                 num_blocks=3, activation=torch.nn.functional.relu)
     model = Flow(transform, base_dist, embedding_net=embedding_net)
     return model
@@ -249,7 +258,7 @@ def posterior(X, Y, X_torch, Y_torch, likelihood_sigma, epochs, q_sample_size,
     # View.plot_loss(losses)
     solution_type = "MAP solution path"
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Y_torch,
-                                                                          likelihood_sigma, 100, 100,
+                                                                          likelihood_sigma, 200, 100,
                                                                           lambda_min_exp, lambda_max_exp)
     View.plot_flow_lasso_path_vs_ground_truth(X, Y,
                                               lambdas_sorted, q_samples_sorted, likelihood_sigma ** 2, solution_type)
@@ -295,6 +304,7 @@ def main():
                                              learning_rate, W)
 
     q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+    Utilities.save_text_file("best_parameter_Lasso.txt", str(q_selected))
 
     Evaluation.evaluate_model(flows, q_selected, X_torch, Y_torch, "Lasso-Regression-CNf-Training-data")
     Evaluation.evaluate_model(flows, q_selected, X_test, Y_test, "Lasso-Regression-CNf-Test-data")

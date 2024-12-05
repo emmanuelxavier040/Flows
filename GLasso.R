@@ -8,7 +8,7 @@ GLassoPath <- function(X, y, group, lambdas, loss="ls") {
 }
 
 CVGLasso <- function(X, y, group, lambdas) {
-    cv <- cv.gglasso(x=X, y=y, group=group, lambda=lambdas,loss="ls", pred.loss="L2",
+    cv <- cv.gglasso(x=X, y=y, group=group, loss="ls", pred.loss="L2",
             intercept = F, nfolds=9)
     return (cv)
 }

@@ -1,7 +1,6 @@
 import math
 
 import numpy as np
-import scipy as sp
 import torch
 from enflows.distributions.normal import StandardNormal
 from enflows.flows.base import Flow
@@ -9,17 +8,15 @@ from enflows.nn.nets import ResidualNet
 from enflows.transforms.base import CompositeTransform, InverseTransform
 from enflows.transforms.conditional import ConditionalSumOfSigmoidsTransform
 from enflows.transforms.normalization import ActNorm
-from sklearn.linear_model import LinearRegression
 
 from torch import optim
 
 import Evaluation
+import PoissonRegressionCNF
 import Utilities
 import Visualizations as View
 
-import rpy2.robjects as robjects
-from rpy2.robjects.packages import importr
-import pandas as pd
+
 from rpy2.robjects import pandas2ri
 
 pandas2ri.activate()
@@ -125,12 +122,15 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
                 solution_type = "Poisson-Group-Lasso-Solution Path"
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
                                                                                       likelihood_sigma,
-                                                                                      grouped_indices_list, 100,
+                                                                                      grouped_indices_list, 200,
                                                                                       100,
                                                                                       lambda_min_exp, lambda_max_exp)
 
                 log_likelihood_means = np.mean(-losses_sorted, axis=1)
                 lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+                title = "Poisson-Group-Lasso-Regression-CNF"
+                View.plot_log_marginal_likelihood_vs_lambda(X, Z, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
+                                                            title, grouped_indices_list)
 
                 View.plot_flow_group_poisson_path_vs_ground_truth(X, Z, grouped_indices_list,
                                                                   lambdas_sorted, q_samples_sorted, solution_type)
@@ -144,39 +144,15 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
     return flows, losses, lambda_max_likelihood
 
 
-def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n, noise):
+def generate_synthetic_data(d, n, noise):
     # Define a Posisson distribution and generate some real world samples X and Y
     print("Generating real-world samples : Sample_size:{} Dimensions:{}".format(n, d))
 
+    data_mean = torch.zeros(d)
+    data_cov = torch.eye(d)
+    data_mvn_dist = torch.distributions.MultivariateNormal(data_mean, data_cov)
     num_data_samples = torch.Size([n])
-    num_samples = n
-    X = torch.zeros((num_samples, d))
-
-    mean = 1
-    std = 0.1
-
-    g1_size = len(grouped_indices_list[0])
-    g1_mean = torch.normal(mean=mean, std=std, size=(num_samples, g1_size))
-    X[:, grouped_indices_list[0]] = g1_mean + torch.normal(mean=0, std=0.1, size=(num_samples, g1_size))
-
-    g2_size = len(grouped_indices_list[1])
-    # g2_base = torch.distributions.Exponential(1).sample((num_samples, 1))
-    g2_base = torch.normal(mean=mean, std=std, size=(num_samples, g2_size))
-    X[:, grouped_indices_list[1]] = g2_base + torch.normal(mean=0, std=0.1, size=(num_samples, g2_size))
-
-    g3_size = len(grouped_indices_list[2])
-    # g3_base = torch.rand(num_samples, 1)
-    # X[:, grouped_indices_list[2]] = g3_base + torch.rand(num_samples, g3_size)
-    g3_base = torch.normal(mean=mean, std=std, size=(num_samples, g3_size))
-    X[:, grouped_indices_list[2]] = g3_base + torch.normal(mean=0, std=0.1, size=(num_samples, g3_size))
-
-    # 15, 100
-    for group_index in range(len(grouped_indices_list) - 3):
-        g_size = len(grouped_indices_list[group_index + 3])
-        g_base = torch.normal(mean=mean, std=std, size=(num_samples, g_size))
-        X[:, grouped_indices_list[group_index + 3]] = g_base + torch.normal(mean=0, std=0.1, size=(num_samples, g_size))
-
-    # W = torch.rand(d) * 20 - 10
+    X = data_mvn_dist.sample(num_data_samples)
     W = torch.randn(d)
 
     min_val = torch.min(W)
@@ -184,15 +160,13 @@ def generate_synthetic_data(d, grouped_indices_list, zero_weight_group_index, n,
     W = -1 + 2 * (W - min_val) / (max_val - min_val)
 
     print(W)
-    # W = torch.tensor([1.5, 2.4, 0.3, 0.7])
-    # W[grouped_indices_list[zero_weight_group_index]] = 0
 
     v = torch.tensor(noise ** 2)
     delta = torch.randn(num_data_samples) * v
-    # delta = torch.normal(0, noise ** 2, num_data_samples)
     Y = torch.matmul(X, W) + delta
     mean_poisson = torch.exp(Y)
     Z = torch.poisson(mean_poisson) + 1
+
     return X, Z, W, v, Y, mean_poisson
 
 
@@ -344,60 +318,49 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, grouped_indices_list, ep
 
 
     # print_original_vs_flow_learnt_parameters(dimension, original_W, flows, context=fixed_lambda_exp)
-    View.plot_loss(losses)
-    solution_type = "Poisson-Group-Lasso-Solution Path"
+    View.plot_loss(losses, "Poisson-Group-Lasso")
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
-                                                                          likelihood_sigma, grouped_indices_list, 100,
+                                                                          likelihood_sigma, grouped_indices_list, 200,
                                                                           100,
                                                                           lambda_min_exp, lambda_max_exp)
     solution_type = "Poisson-Group-Lasso-Solution Path - MAP"
     View.plot_flow_group_poisson_path_vs_ground_truth(X, Z, grouped_indices_list,
                                                       lambdas_sorted, q_samples_sorted, solution_type)
-    #
-    # View.plot_group_norms_vs_lambda(X, Z, grouped_indices_list, lambdas_sorted, q_samples_sorted)
-    #
-    # View.plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Z, grouped_indices_list,
-    #                                                                           lambdas_sorted, q_samples_sorted,
-    #                                                                           solution_type)
+
+    title = 'Poisson GLR with CNF - Group Norms'
+    View.plot_group_norms_vs_lambda(X, Z, grouped_indices_list, lambdas_sorted, q_samples_sorted, title, lambda_max_likelihood)
+
+    View.plot_flow_group_lasso_path_vs_ground_truth_standardized_coefficients(X, Z, grouped_indices_list,
+                                                                              lambdas_sorted, q_samples_sorted,
+                                                                              solution_type)
 
     return flows, lambda_max_likelihood
 
 
 def main():
     # Set the parameters
-    epochs = 5000
-    dimension = 24
-    group_size = 3
+    epochs = 10000
+    dimension = 5
+    group_size = 1
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
-    zero_weight_group_index = 1
-    data_sample_size = 60
+    data_sample_size = 200
     data_noise_sigma = 1.0
-    likelihood_sigma = 1
+    likelihood_sigma = 2
     q_sample_size = 1
-    context_size = 1000
-    lambda_min_exp = 0
-    lambda_max_exp = 10
-    learning_rate = 1e-3
-
-    data_sample_size = 30
-    data_noise_sigma = 1.0
-    likelihood_sigma = 1
-    q_sample_size = 1
-    context_size = 1000
-    lambda_min_exp = -2
+    context_size = 5000
+    lambda_min_exp = -4
     lambda_max_exp = 6
     learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
-          f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
+          f"Dimension:{dimension}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
 
-    # X, Z, W, variance, Y, mean_poisson = generate_synthetic_data(dimension, grouped_indices_list,
-    #                                                              zero_weight_group_index,
-    #                                                              data_sample_size, data_noise_sigma)
+    X, Z, W, variance, Y, mean_poisson = generate_synthetic_data(dimension, data_sample_size, data_noise_sigma)
     # X, Z, W, variance, Y, mean_poisson = generate_synthetic_data_2(dimension, data_sample_size, data_noise_sigma)
-    X, Z, W = generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
-                                                                   data_noise_sigma)
+    # X, Z, W = generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indices_list, data_sample_size,
+    #                                                                data_noise_sigma)
+
     X = (X - X.mean(0)) / X.std(0)
 
     train_ratio = 0.8
@@ -413,13 +376,16 @@ def main():
     q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
 
     print(q_selected)
-    # Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Group-Lasso-Regression-CNF-Training-data")
-    # Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Group-Lasso-Regression-CNF-Test-data")
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Group-Lasso-Regression-CNF-Training-data")
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Group-Lasso-Regression-CNF-Test-data")
 
-    # PoissonRegressionCNF.posterior(X.detach().cpu().numpy(), Z.detach().cpu().numpy(), X_torch, Z_torch,
-    #                                likelihood_sigma,
-    #                                epochs, q_sample_size, context_size,
-    #                                lambda_min_exp, lambda_max_exp, learning_rate, W, title="Lasso")
+    flows, lambda_max_likelihood = PoissonRegressionCNF.posterior(X.detach().cpu().numpy(), Z.detach().cpu().numpy(), X_torch, Z_torch,
+                                   likelihood_sigma,
+                                   epochs, q_sample_size, context_size,
+                                   lambda_min_exp, lambda_max_exp, learning_rate, W, title="Lasso")
+    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Lasso-Regression-CNF-Training-data")
+    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Lasso-Regression-CNF-Test-data")
 
 
 if __name__ == "__main__":

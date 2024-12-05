@@ -24,21 +24,28 @@ device = "cuda:0" if torch.cuda.is_available() else 'cpu'
 print("Device used : ", device)
 
 
-def log_posterior_unnormalized(grouped_indices_list, tau_samples, X, Z, lambdas_exp, sigma):
+def log_posterior_unnormalized(grouped_indices_list, eta_samples, tau_samples, X, Z, lambdas_exp, sigma):
     lambdas = 10 ** lambdas_exp
     variance = sigma ** 2
 
-    log_posterior = 0
+    log_posterior = -torch.sum(torch.lgamma(Z + 1))
 
     d = X.shape[-1]
     G = len(grouped_indices_list)
     log_posterior = log_posterior + ((d + G) / 2) * torch.log((lambdas ** 2) / 2)
-    log_posterior = log_posterior + -(d / 2) * torch.log(2 * torch.tensor(torch.pi))
+    log_posterior = log_posterior + (d / 2) * torch.log(2 * torch.tensor(torch.pi))
+
+    log_posterior = log_posterior.unsqueeze(-1) + torch.sum(eta_samples * Z.T, dim=-1, keepdim=True)
+
+    log_posterior = log_posterior - torch.sum(torch.exp(eta_samples))
 
     term_0 = 0
     for group_indices in grouped_indices_list:
         term_0 = term_0 - torch.lgamma(0.5 * torch.tensor(len(group_indices) + 1))
     log_posterior = log_posterior + term_0
+
+    term_1 = torch.sum(eta_samples * eta_samples, dim=-1).unsqueeze(-1)
+    term_2 = torch.matmul(eta_samples, X)
 
     max_index = max(max(sublist) for sublist in grouped_indices_list) + 1
     repeat_counts = torch.tensor([len(sublist) for sublist in grouped_indices_list]).to(device)
@@ -50,7 +57,12 @@ def log_posterior_unnormalized(grouped_indices_list, tau_samples, X, Z, lambdas_
     list_tensors[:, :, flat_indices_tensor] = values_repeated.to(device)
     taus_diagonal_matrices = torch.diag_embed(1 / list_tensors)
     term_3 = (1 / variance) * torch.matmul(X.T, X) + taus_diagonal_matrices
+    term_3_inv = torch.inverse(term_3)
+    term_4 = term_2.unsqueeze(-1) / variance
 
+    inter_result = torch.matmul(term_2.unsqueeze(2), term_3_inv).squeeze(2)
+    log_posterior = log_posterior + -0.5 * variance * (
+            term_1 - torch.matmul(inter_result.unsqueeze(2), term_4).squeeze(-1))
     log_posterior = log_posterior + -0.5 * torch.sum(torch.log(tau_samples), dim=-1).unsqueeze(-1)
     log_posterior = log_posterior + ((- lambdas ** 2 / 2) * tau_samples.sum(dim=-1)).unsqueeze(-1)
     log_posterior = log_posterior + -0.5 * torch.linalg.slogdet(term_3)[1].unsqueeze(-1)
@@ -89,8 +101,12 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
             uniform_lambdas = torch.rand(context_size).to(device)
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
             context = lambdas_exp
-            tau_samples, flow_log_prob = flows.sample_and_log_prob(num_samples=flow_sample_size, context=context)
-            log_p = log_posterior_unnormalized(grouped_indices_list, tau_samples, X_torch, Z_torch,
+            flow_samples, flow_log_prob = flows.sample_and_log_prob(num_samples=flow_sample_size, context=context)
+
+            n = X.shape[0]
+            G = len(grouped_indices_list)
+            eta_samples, tau_samples = flow_samples[:, :, : n], flow_samples[:, :, : G]
+            log_p = log_posterior_unnormalized(grouped_indices_list, eta_samples, tau_samples, X_torch, Z_torch,
                                                lambdas_exp, likelihood_sigma)
             log_p = torch.clamp(log_p, min=-1e10, max=1e10)
 
@@ -108,7 +124,7 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
 
             next_T = cooling_function((epoch + 1) // (epochs / cool_num_iter))
             if next_T < 1 <= T or (T == 1. and epoch + 1 == epochs):
-                lambdas_sorted, tau_samples_sorted, losses_sorted = sample_from_flow_for_plots(
+                lambdas_sorted, eta_samples_sorted, tau_samples_sorted, losses_sorted = sample_from_flow_for_plots(
                     flows,
                     grouped_indices_list,
                     X_torch, Z_torch,
@@ -122,9 +138,9 @@ def train_CNF(flows, d, grouped_indices_list, X, Z, X_torch, Z_torch, likelihood
                 View.plot_flow_group_coefficients_path_vs_ground_truth(X, Z, lambdas_sorted, tau_samples_sorted,
                                                                        solution_type)
 
-                title = "GL-Poisson-Without_betas_Log_marginal_likelihood"
-                View.plot_log_marginal_likelihood_vs_lambda(X, Z, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
-                                                            title)
+                # title = "GL-Without_betas_Log_marginal_likelihood"
+                # View.plot_log_marginal_likelihood_vs_lambda(X, Y, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
+                #                                             title)
 
     except KeyboardInterrupt:
         print("interrupted..")
@@ -193,36 +209,43 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
 def sample_from_flow_for_plots(flows, grouped_indices_list, X, Z, likelihood_sigma, context_size, flow_sample_size,
                                lambda_min_exp, lambda_max_exp):
     num_iter = 10
-    lambdas, tau_samples_list, losses = [], [], []
+    lambdas, eta_samples_list, tau_samples_list, losses = [], [], [], []
 
     with torch.no_grad():
         for _ in range(num_iter):
             uniform_lambdas = torch.rand(context_size).to(device)
             lambdas_exp = (uniform_lambdas * (lambda_max_exp - lambda_min_exp) + lambda_min_exp).view(-1, 1)
-            tau_samples, flow_log_prob = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
-            log_p_samples = log_posterior_unnormalized(grouped_indices_list, tau_samples, X, Z,
+            flow_samples, flow_log_prob = flows.sample_and_log_prob(flow_sample_size, context=lambdas_exp)
+            n = X.shape[0]
+            G = len(grouped_indices_list)
+            eta_samples, tau_samples = flow_samples[:, :, : n], flow_samples[:, :, : G]
+            log_p_samples = log_posterior_unnormalized(grouped_indices_list, eta_samples, tau_samples, X, Z,
                                                        lambdas_exp, likelihood_sigma)
 
             loss = flow_log_prob - log_p_samples
 
             lambdas.append((10 ** lambdas_exp).squeeze().cpu().detach().numpy())
+            eta_samples_list.append(eta_samples.cpu().detach().numpy())
             tau_samples_list.append(tau_samples.cpu().detach().numpy())
             losses.append(loss.cpu().detach().numpy())
 
-    tau_samples_list, lambdas, losses = (np.concatenate(tau_samples_list, 0),
-        np.concatenate(lambdas, 0), np.concatenate(losses, 0))
+    eta_samples_list, tau_samples_list, lambdas, losses = (np.concatenate(eta_samples_list, 0),
+                                                           np.concatenate(tau_samples_list, 0),
+                                                           np.concatenate(lambdas, 0), np.concatenate(losses, 0))
     lambda_sort_order = lambdas.argsort()
 
     lambdas_sorted = lambdas[lambda_sort_order]
+    eta_samples_sorted = eta_samples_list[lambda_sort_order]
     tau_samples_sorted = tau_samples_list[lambda_sort_order]
     losses_sorted = losses[lambda_sort_order]
-    return lambdas_sorted, tau_samples_sorted, losses_sorted
+    return lambdas_sorted, eta_samples_sorted, tau_samples_sorted, losses_sorted
 
 
-def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, grouped_indices_list, epochs, tau_sample_size,
+def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, grouped_indices_list, epochs, flow_sample_size,
               context_size, lambda_min_exp, lambda_max_exp, learning_rate, W):
+    n_data = X.shape[0]
     n_groups = len(grouped_indices_list)
-    dimension = n_groups
+    dimension = n_data + n_groups
 
     # ==================================================================
     # train conditional flows
@@ -232,7 +255,7 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, grouped_indices_list, ep
 
     flows, losses, lambda_max_likelihood = train_CNF(flows, dimension, grouped_indices_list, X, Z, X_torch, Z_torch,
                                                      likelihood_sigma, epochs,
-                                                     tau_sample_size,
+                                                     flow_sample_size,
                                                      context_size, lambda_min_exp, lambda_max_exp,
                                                      learning_rate)
     print("Best lamba selected from flows : ", lambda_max_likelihood)
@@ -241,10 +264,13 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, grouped_indices_list, ep
     View.plot_loss(losses)
     # solution_type = "No_Beta_Group-Lasso-Solution Path"
     solution_type = "No_Beta_Group-Poisson-Lasso-MAP"
-    lambdas_sorted, tau_samples_sorted, losses_sorted = sample_from_flow_for_plots(flows, grouped_indices_list, X_torch,
-                                                                                   Z_torch, likelihood_sigma,
-                                                                                   100, 100,
-                                                                                    lambda_min_exp, lambda_max_exp)
+    lambdas_sorted, eta_samples_sorted, tau_samples_sorted, losses_sorted = sample_from_flow_for_plots(flows,
+                                                                                                       grouped_indices_list,
+                                                                                                       X_torch, Z_torch,
+                                                                                                       likelihood_sigma,
+                                                                                                       100, 100,
+                                                                                                       lambda_min_exp,
+                                                                                                       lambda_max_exp)
 
     View.plot_flow_group_coefficients_path_vs_ground_truth(X, Z, lambdas_sorted, tau_samples_sorted, solution_type)
     return flows, lambda_max_likelihood
@@ -288,10 +314,46 @@ def generate_synthetic_data_with_zero_group_coefficients(dimension, grouped_indi
 
     return X, Z, W, v, Y, mean_poisson
 
+def generate_synthetic_data(d, n, noise):
+    # Define a Posisson distribution and generate some real world samples X and Y
+    print("Generating real-world samples : Sample_size:{} Dimensions:{}".format(n, d))
+
+    data_mean = torch.zeros(d)
+    data_cov = torch.eye(d)
+    data_mvn_dist = torch.distributions.MultivariateNormal(data_mean, data_cov)
+    num_data_samples = torch.Size([n])
+    X = data_mvn_dist.sample(num_data_samples)
+    W = torch.randn(d)
+    min_val = torch.min(W)
+    max_val = torch.max(W)
+    W = -1 + 2 * (W - min_val) / (max_val - min_val)
+
+    print(W)
+
+    v = torch.tensor(noise ** 2)
+    delta = torch.randn(num_data_samples) * v
+    Y = torch.matmul(X, W) + delta
+    mean_poisson = torch.exp(Y)
+    Z = torch.poisson(mean_poisson) + 1
+    return X, Z, W, v, Y, mean_poisson
+
+def calculate_beta_distribution_by_plugging_in_MAP_taus_and_etas_in_main_equation(likelihood_sigma, X_train, eta,
+                                                                     taus_diagonal_matrix):
+    likelihood_cov_matrix = (likelihood_sigma ** 2) * torch.eye(X_train.shape[0]).to(device)
+    Λ = torch.inverse(likelihood_cov_matrix).to(device)
+    XTΛX = torch.matmul(torch.matmul(X_train.T, Λ), X_train).to(device)
+    cov_beta_dist = XTΛX + taus_diagonal_matrix
+    m = torch.matmul
+
+    inv_XT = Utilities.woodbury_identity_special(taus_diagonal_matrix, X_train.T, Λ, X_train, X_train.T, device)
+    mean_beta_dist = m(m(inv_XT, Λ.t()), eta)
+    return mean_beta_dist, cov_beta_dist
+
+
 
 def main():
     # Set the parameters
-    epochs = 1000
+    epochs = 10000
     dimension = 12
     group_size = 3
     grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
@@ -308,10 +370,13 @@ def main():
     print(f"============= Parameters ============= \n"
           f"Dimension:{dimension}, zero_weight_group_index:{zero_weight_group_index}, "
           f"Sample Size:{data_sample_size}, noise:{data_noise_sigma}, likelihood_sigma:{likelihood_sigma}\n")
-    X, Z, W, variance, Y, mean_poisson = generate_synthetic_data_with_zero_group_coefficients(dimension,
-                                                                                              grouped_indices_list,
-                                                                                              data_sample_size,
-                                                                                              data_noise_sigma)
+    # X, Z, W, variance, Y, mean_poisson = generate_synthetic_data_with_zero_group_coefficients(dimension,
+    #                                                                                           grouped_indices_list,
+    #                                                                                           data_sample_size,
+    #                                                                                           data_noise_sigma)
+    X, Z, W, variance, Y, mean_poisson = generate_synthetic_data(dimension, data_sample_size, data_noise_sigma)
+
+
     # X, Z, W, variance, Y, mean_poisson = generate_synthetic_data(dimension, data_sample_size, data_noise_sigma)
 
     # X, Y, W = generate_regression_dataset(data_sample_size, dimension, dimension, data_noise_sigma)

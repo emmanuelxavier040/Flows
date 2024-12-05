@@ -15,6 +15,7 @@ from torch import optim
 import Evaluation
 import Utilities
 import Visualizations as View
+import GroupPoissonRegressionCNF
 
 from rpy2.robjects import pandas2ri
 
@@ -114,12 +115,16 @@ def train_CNF(flows, d, X, Z, X_torch, Z_torch, likelihood_sigma, epochs, n, con
                 solution_type = "Ridge Solution Path" if is_ridge_posterior else "Lasso Solution Path"
 
                 lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
-                                                                                      likelihood_sigma, 100,
+                                                                                      likelihood_sigma, 200,
                                                                                       100,
                                                                                       lambda_min_exp, lambda_max_exp)
 
                 log_likelihood_means = np.mean(-losses_sorted, axis=1)
                 lambda_max_likelihood = lambdas_sorted[np.argmax(log_likelihood_means)]
+                title = "Ridge" if is_ridge_posterior else "Lasso"
+                title = "Poisson-with-CNF_at_T1-" + title
+                View.plot_log_marginal_likelihood_vs_lambda(X, Z, lambdas_sorted, losses_sorted, likelihood_sigma ** 2,
+                                                            title)
 
                 View.plot_flow_poisson_regression_path_vs_ground_truth(X_torch.cpu().detach().numpy(),
                                                                        Z_torch.cpu().detach().numpy(),
@@ -142,7 +147,6 @@ def generate_synthetic_data(d, n, noise):
     num_data_samples = torch.Size([n])
     X = data_mvn_dist.sample(num_data_samples)
     W = torch.randn(d)
-
     min_val = torch.min(W)
     max_val = torch.max(W)
     W = -1 + 2 * (W - min_val) / (max_val - min_val)
@@ -154,22 +158,28 @@ def generate_synthetic_data(d, n, noise):
     Y = torch.matmul(X, W) + delta
     mean_poisson = torch.exp(Y)
     Z = torch.poisson(mean_poisson) + 1
-
     return X, Z, W, v, Y, mean_poisson
 
 
 def build_sum_of_sigmoid_conditional_flow_model(d):
     context_features = 16
+    hidden_features = 64
+    num_layers = 3
     print("Defining the flows")
+
 
     base_dist = StandardNormal(shape=[d])
     transforms = []
-    num_layers = 3
+
+    context_features = 32
+    hidden_features = 128
+    num_layers = 5
+
     for _ in range(num_layers):
         transforms.append(
             InverseTransform(
                 ConditionalSumOfSigmoidsTransform(
-                    features=d, hidden_features=64,
+                    features=d, hidden_features=hidden_features,
                     context_features=context_features, num_blocks=5, n_sigmoids=30)
             )
         )
@@ -181,7 +191,7 @@ def build_sum_of_sigmoid_conditional_flow_model(d):
 
     transforms = transforms[::-1]
     transform = CompositeTransform(transforms)
-    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=64,
+    embedding_net = ResidualNet(in_features=1, out_features=context_features, hidden_features=hidden_features,
                                 num_blocks=3, activation=torch.nn.functional.relu)
     model = Flow(transform, base_dist, embedding_net=embedding_net)
     return model
@@ -264,7 +274,7 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, epochs, q_sample_size,
 
     # View.plot_loss(losses)
     lambdas_sorted, q_samples_sorted, losses_sorted = sample_Ws_for_plots(flows, X_torch, Z_torch,
-                                                                          likelihood_sigma, 100,
+                                                                          likelihood_sigma, 200,
                                                                           100,
                                                                           lambda_min_exp,
                                                                           lambda_max_exp,
@@ -276,21 +286,24 @@ def posterior(X, Z, X_torch, Z_torch, likelihood_sigma, epochs, q_sample_size,
                                                            Z_torch.cpu().detach().numpy(),
                                                            lambdas_sorted, q_samples_sorted, likelihood_sigma,
                                                            solution_type, is_ridge_posterior)
+    solution_type = "MAP "+str(title)
+    View.plot_flow_poisson_path_vs_ground_truth_standardized_coefficients(X, Z, lambdas_sorted, q_samples_sorted,
+                                                                     solution_type, is_ridge_posterior)
 
     return flows, lambda_max_likelihood
 
 
 def main():
     # Set the parameters
-    epochs = 1000
-    dimension = 8
-    data_sample_size = 50
+    epochs = 500
+    dimension = 5
+    data_sample_size = 200
     data_noise_sigma = 1.0
-    likelihood_sigma = 1
+    likelihood_sigma = 2
     q_sample_size = 1
-    context_size = 100
-    lambda_min_exp = -2
-    lambda_max_exp = 6
+    context_size = 5000
+    lambda_min_exp = -3
+    lambda_max_exp = 7
     learning_rate = 1e-3
 
     print(f"============= Parameters ============= \n"
@@ -309,22 +322,64 @@ def main():
     Z_torch = Z_train.to(device)
     X_test, Z_test = X_test.to(device), Z_test.to(device)
 
-    print("======================= Poisson Ridge Regression =======================")
-    flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
-              epochs, q_sample_size, context_size,
-              lambda_min_exp, lambda_max_exp, learning_rate, W, title="Ridge")
-    q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+    epochs_list = np.arange(20000, 25000, 5000).tolist()
+    lambda_min_exp_list = np.arange(-4, -3, 1).tolist()
+    lambda_max_exp_list = np.arange(6, 7, 1).tolist()
+    for epochs in epochs_list:
+        for lambda_min_exp in lambda_min_exp_list:
+            for lambda_max_exp in lambda_max_exp_list:
+                print("=======================  Poisson Lasso Regression =======================")
+                flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(),
+                                                         X_torch, Z_torch, likelihood_sigma,
+                                                         epochs, q_sample_size, context_size,
+                                                         lambda_min_exp, lambda_max_exp, learning_rate, W, title="Lasso")
+                q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+                Utilities.save_text_file("Best_parameter_Poisson_Lasso.txt", str(q_selected))
 
-    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Ridge-Regression-CNF-Training-data")
-    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Ridge-Regression-CNF-Test-data")
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch,
+                                                  "Poisson-Lasso-Regression-CNF-Training-data")
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test,
+                                                  "Poisson-Lasso-Regression-CNF-Test-data")
 
-    print("=======================  Poisson Lasso Regression =======================")
-    flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(), X_torch, Z_torch, likelihood_sigma,
-              epochs, q_sample_size, context_size,
-              lambda_min_exp, lambda_max_exp, learning_rate, W, title="Lasso")
 
-    Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch, "Poisson-Lasso-Regression-CNF-Training-data")
-    Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test, "Poisson-Lasso-Regression-CNF-Test-data")
+                print("======================= Poisson Ridge Regression =======================")
+                flows, lambda_max_likelihood = posterior(X_train.detach().cpu().numpy(), Z_train.detach().cpu().numpy(),
+                                                         X_torch, Z_torch, likelihood_sigma,
+                                                         epochs, q_sample_size, context_size,
+                                                         lambda_min_exp, lambda_max_exp, learning_rate, W, title="Ridge")
+                q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+                Utilities.save_text_file("Best_parameter_Poisson_Ridge.txt", str(q_selected))
+
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch,
+                                                  "Poisson-Ridge-Regression-CNF-Training-data")
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test,
+                                                  "Poisson-Ridge-Regression-CNF-Test-data")
+
+                group_size = 1
+                grouped_indices_list = [list(range(i, i + group_size)) for i in range(0, dimension, group_size)]
+                flows, lambda_max_likelihood = GroupPoissonRegressionCNF.posterior(X_train.detach().cpu().numpy(),
+                                                                                   Z_train.detach().cpu().numpy(),
+                                                                                   X_torch, Z_torch, likelihood_sigma,
+                                                                                   grouped_indices_list, epochs,
+                                                                                   q_sample_size, context_size,
+                                                                                   lambda_min_exp, lambda_max_exp,
+                                                                                   learning_rate, W)
+                q_selected = Utilities.select_q_for_max_likelihood_lambda(lambda_max_likelihood, flows, device)
+                Utilities.save_text_file("Best_parameter_Poisson_GLasso.txt", str(q_selected))
+
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_torch, Z_torch,
+                                                  "Poisson-Group-Lasso-Regression-CNF-Training-data")
+                Evaluation.evaluate_poisson_model(flows, q_selected, X_test, Z_test,
+                                                  "Poisson-Group-Lasso-Regression-CNF-Test-data")
+
+
+                iter_identifier = f"epochs{epochs}_d{dimension}_n{data_sample_size}_d{dimension}_lam_min_exp{lambda_min_exp}_lam_max_exp{lambda_max_exp}"
+                destination_directory = f'./figures/GExp_' + iter_identifier
+                Utilities.create_directory(destination_directory)
+                source_directory = "./figures/"
+                Utilities.move_all_files_in_source_to_dest_directory(source_directory, destination_directory)
+
+
 
 
 if __name__ == "__main__":
